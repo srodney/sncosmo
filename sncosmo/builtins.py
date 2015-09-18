@@ -286,6 +286,12 @@ kepler_meta = {
     'description': 'Bandpass for the Kepler spacecraft',
     'dataurl': 'http://keplergo.arc.nasa.gov/CalibrationResponse.shtml'}
 
+wfirst_meta = {
+    'filterset': 'wfirst',
+    'retrieved': '18 Sep 2015',
+    'description': 'Preliminary bandpasses for the WFIRST spacecraft',
+    'dataurl': ''}
+
 bands = [('bessellux', 'bessell/bessell_ux.dat', bessell_meta),
          ('bessellb', 'bessell/bessell_b.dat', bessell_meta),
          ('bessellv', 'bessell/bessell_v.dat', bessell_meta),
@@ -338,7 +344,11 @@ bands = [('bessellux', 'bessell/bessell_ux.dat', bessell_meta),
          ('f775w', 'hst/hst_acs_wfc_f775w.dat', acs_meta),
          ('f814w', 'hst/hst_acs_wfc_f814w.dat', acs_meta),
          ('f850lp', 'hst/hst_acs_wfc_f850lp.dat', acs_meta),
-         ('kepler', 'kepler/kepler.dat', kepler_meta)]
+         ('kepler', 'kepler/kepler.dat', kepler_meta),
+         ('h158', 'wfirst/H158_Aeff_norm.dat', wfirst_meta),
+         ('j129', 'wfirst/J129_Aeff_norm.dat', wfirst_meta),
+         ('y106', 'wfirst/Y106_Aeff_norm.dat', wfirst_meta),
+         ]
 
 for name, fname, meta in bands:
     registry.register_loader(Bandpass, name, load_bandpass_angstroms,
