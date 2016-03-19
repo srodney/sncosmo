@@ -11,6 +11,7 @@ import tarfile
 import warnings
 import os
 from os.path import join
+import codecs
 
 import numpy as np
 from astropy import wcs, units as u
@@ -23,7 +24,7 @@ from astropy.utils.data import get_pkg_data_filename
 from . import registry
 from . import io
 from .utils import download_file, download_dir
-from .models import Source, TimeSeriesSource, SALT2Source
+from .models import Source, TimeSeriesSource, SALT2Source, MLCS2k2Source
 from .spectral import (Bandpass, read_bandpass, Spectrum, MagSystem,
                        SpectralMagSystem, ABMagSystem)
 from . import conf
@@ -44,7 +45,8 @@ def get_url(name, version=None):
         from six.moves.urllib.request import urlopen
         import json
         f = urlopen("http://sncosmo.github.io/data/urls.json")
-        urls = json.load(f)
+        reader = codecs.getreader("utf-8")
+        urls = json.load(reader(f))
         f.close()
 
     key = name if (version is None) else "{0}_v{1}".format(name, version)
@@ -123,6 +125,20 @@ def load_bandpass_microns(pkg_data_name, name=None):
     return read_bandpass(fname, wave_unit=u.micron, name=name)
 
 
+def load_bandpass_bessell(pkg_data_name, name=None):
+    """Bessell bandpasses have (1/energy) transmission units."""
+    fname = get_pkg_data_filename(pkg_data_name)
+    band = read_bandpass(fname, wave_unit=u.AA, trans_unit=u.erg**-1,
+                         name=name)
+
+    # We happen to know that Bessell bandpasses in file are arbitrarily
+    # scaled to have a peak of 1 photon / erg. Rescale here to a peak of
+    # 1 (unitless transmission) to be more similar to other bandpasses.
+    band.trans /= np.max(band.trans)
+
+    return band
+
+
 def tophat_bandpass(ctr, width, name=None):
     """Create a tophat Bandpass centered at `ctr` with width `width` (both
     in microns) sampled at 100 intervals."""
@@ -158,7 +174,7 @@ def load_timeseries_fits_local(pkg_data_name, name=None, version=None):
 
 def load_salt2model(relpath, name=None, version=None):
     abspath = get_abspath(relpath, name, version=version)
-    return SALT2Source(modeldir=abspath)
+    return SALT2Source(modeldir=abspath, name=name, version=version)
 
 
 def load_2011fe(relpath, name=None, version=None):
@@ -292,12 +308,25 @@ wfirst_meta = {
     'description': 'Preliminary bandpasses for the WFIRST spacecraft',
     'dataurl': ''}
 
+csp_meta = {
+    'filterset': 'csp',
+    'retrieved': '6 Nov 2015',
+    'description': 'Carnegie Supernova Proj. filts (Swope+DuPont Telescopes)',
+    'dataurl': 'http://csp.obs.carnegiescience.edu/data/filters'}
+
+
+# Bessell bandpasses have transmission in units of (photons / erg)
 bands = [('bessellux', 'bessell/bessell_ux.dat', bessell_meta),
          ('bessellb', 'bessell/bessell_b.dat', bessell_meta),
          ('bessellv', 'bessell/bessell_v.dat', bessell_meta),
          ('bessellr', 'bessell/bessell_r.dat', bessell_meta),
-         ('besselli', 'bessell/bessell_i.dat', bessell_meta),
-         ('desg', 'des/des_g.dat', des_meta),
+         ('besselli', 'bessell/bessell_i.dat', bessell_meta)]
+for name, fname, meta in bands:
+    registry.register_loader(Bandpass, name, load_bandpass_bessell,
+                             args=['data/bandpasses/' + fname],
+                             meta=meta)
+
+bands = [('desg', 'des/des_g.dat', des_meta),
          ('desr', 'des/des_r.dat', des_meta),
          ('desi', 'des/des_i.dat', des_meta),
          ('desz', 'des/des_z.dat', des_meta),
@@ -348,7 +377,21 @@ bands = [('bessellux', 'bessell/bessell_ux.dat', bessell_meta),
          ('h158', 'wfirst/H158_Aeff_norm.dat', wfirst_meta),
          ('j129', 'wfirst/J129_Aeff_norm.dat', wfirst_meta),
          ('y106', 'wfirst/Y106_Aeff_norm.dat', wfirst_meta),
-         ]
+         ('cspb',     'csp/B_texas_WLcorr_atm.txt',        csp_meta),
+         ('csphs',    'csp/H_SWO_TAM_scan_atm.dat',        csp_meta),
+         ('csphd',    'csp/H_texas_DUP_atm.dat',           csp_meta),
+         ('cspjs',    'csp/J_SWO_TAM_atm.dat',             csp_meta),
+         ('cspjd',    'csp/J_texas_DUP_atm.dat',           csp_meta),
+         ('cspv3009', 'csp/V_LC3009_texas_WLcorr_atm.txt', csp_meta),
+         ('cspv3014', 'csp/V_LC3014_texas_WLcorr_atm.txt', csp_meta),
+         ('cspv9844', 'csp/V_LC9844_texax_WLcorr_atm.txt', csp_meta),
+         ('cspys',    'csp/Y_SWO_TAM_scan_atm.dat',        csp_meta),
+         ('cspyd',    'csp/Y_texas_DUP_atm.dat',           csp_meta),
+         ('cspg',     'csp/g_texas_WLcorr_atm.txt',        csp_meta),
+         ('cspi',     'csp/i_texas_WLcorr_atm.txt',        csp_meta),
+         ('cspk',     'csp/kfilter',                       csp_meta),
+         ('cspr',     'csp/r_texas_WLcorr_atm.txt',        csp_meta),
+         ('cspu',     'csp/u_texas_WLcorr_atm.txt',        csp_meta)]
 
 for name, fname, meta in bands:
     registry.register_loader(Bandpass, name, load_bandpass_angstroms,
@@ -589,6 +632,22 @@ for name, fn in [('whalen-z15b', 'popIII-z15B.sed.restframe10pc.dat'),
     registry.register_loader(Source, name, load_timeseries_ascii,
                              args=[relpath, True], version='1.0', meta=meta)
 
+
+# MLCS2k2
+def load_mlcs2k2(relpath, name=None, version=None):
+    abspath = get_abspath(relpath, name, version=version)
+    return MLCS2k2Source(abspath, name=name, version=version)
+
+meta = {'type': 'SN Ia',
+        'subclass': '`~sncosmo.MLCS2k2Source`',
+        'reference': ('Jha07',
+                      'Jha, Riess and Kirshner 2007 '
+                      '<http://adsabs.harvard.edu/abs/2007ApJ...659..122J>'),
+        'note': 'In MLCS2k2 language, this version corresponds to '
+        '"MLCS2k2 v0.07 rv19-early-smix vectors"'}
+registry.register_loader(Source, 'mlcs2k2', load_mlcs2k2,
+                         args=['models/mlcs2k2/mlcs2k2.modelflux.fits'],
+                         version='1.0', meta=meta)
 
 # =============================================================================
 # MagSystems

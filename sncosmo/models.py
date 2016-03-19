@@ -7,18 +7,21 @@ import os
 from copy import copy as cp
 from textwrap import dedent
 from math import ceil
+import itertools
 
 import numpy as np
 from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                RectBivariateSpline as Spline2d,
                                splmake, spleval)
 from astropy.utils import OrderedDict as odict
+from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
 from astropy.extern import six
 
-from .io import read_griddata_ascii
+from .io import read_griddata_ascii, read_griddata_fits
+
 from . import registry
-from .spectral import get_bandpass, get_magsystem, Bandpass
+from .spectral import get_bandpass, get_magsystem, Bandpass, HC_ERG_AA
 try:
     # Not guaranteed available at setup time
     from ._extinction import ccm89, od94, f99kknots, f99uv
@@ -27,10 +30,8 @@ except ImportError:
         raise
 
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
-           'SALT2Source', 'Model',
+           'SALT2Source', 'MLCS2k2Source', 'Model',
            'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust']
-
-HC_ERG_AA = const.h.cgs.value * const.c.to(u.AA / u.s).value
 
 
 def _check_for_fitpack_error(e, a, name):
@@ -238,11 +239,18 @@ class Source(_ModelBase):
     """An abstract base class for transient models.
 
     A "transient model" in this case is the spectral time evolution
-    of a source as a function of an arbitrary number of parameters.
+    of a source, as defined in the rest-frame of the transient: ``Source``
+    subclass instances define a spectral flux density
+    (in, e.g., erg / s / cm^2 / Angstrom) as a function of phase and
+    wavelength, where phase and wavelength are in the source's rest-frame.
+    (The ``Model`` class wraps a ``Source`` instance and takes care of
+    redshift and time dilation.) This two-dimensional spectral surface
+    can be a function of any number of parameters that alter its amplitude
+    or shape. Different subclasses will have different parameters.
 
     This is an abstract base class -- You can't create instances of
     this class. Instead, you must work with subclasses such as
-    `TimeSeriesSource`. Subclasses must define (at minimum):
+    ``TimeSeriesSource``. Subclasses must define (at minimum):
 
     * `__init__()`
     * `_param_names` (list of str)
@@ -441,12 +449,15 @@ class TimeSeriesSource(Source):
 
        F(t, \lambda) = A \\times M(t, \lambda)
 
-    where _M_ is the flux defined on a grid in phase and wavelength and _A_
-    (amplitude) is the single free parameter of the model. It should be noted
-    that while t and \lambda are in the rest frame of the object, the flux
-    density is defined at redshift zero. This means that for objects with the
-    same intrinsic luminosity, the amplitude will be smaller for objects at
-    larger luminosity distances.
+    where _M_ is the flux defined on a grid in phase and wavelength
+    and _A_ (amplitude) is the single free parameter of the model. The
+    amplitude _A_ is a simple unitless scaling factor applied to
+    whatever flux values are used to initialize the
+    ``TimeSeriesSource``. Therefore, the _A_ parameter has no
+    intrinsic meaning. It can only be interpreted in conjunction with
+    the model values. Thus, it is meaningless to compare the _A_
+    parameter between two different ``TimeSeriesSource`` instances with
+    different model data.
 
     Parameters
     ----------
@@ -465,6 +476,7 @@ class TimeSeriesSource(Source):
         Name of the model. Default is `None`.
     version : str, optional
         Version of the model. Default is `None`.
+
     """
 
     _param_names = ['amplitude']
@@ -972,6 +984,74 @@ class SALT2Source(Source):
             return self._colorlaw(wave)
 
 
+class MLCS2k2Source(Source):
+    """A spectral time series model based on the MLCS2k2 model light curves,
+    using the Hsiao template at each phase, mangled to match the model
+    photometry.
+
+    The spectral flux density of this model is given by
+
+    .. math::
+
+       F(t, \lambda) = A \\times M(\Delta, t, \lambda)
+
+    where _A_ is the amplitude and _Delta_ is the MLCS2k2 light curve shape
+    parameter.
+
+    .. note:: Requires scipy version 0.14 or higher.
+
+    Parameters
+    ----------
+    fluxfile : str or obj
+        Filename (or open file-like object) of a FITS file containing 3-d
+        array of spectral flux density values for a grid of delta, phase
+        and wavelength values.
+    """
+
+    _param_names = ['amplitude', 'delta']
+    param_names_latex = ['A', '\Delta']
+
+    def __init__(self, fluxfile, name=None, version=None):
+
+        # RegularGridInterpolator is only available in recent scipy
+        # versions.
+        try:
+            from scipy.interpolate import RegularGridInterpolator
+        except ImportError:
+            import scipy  # to get scipy version
+            raise ImportError("scipy version 0.14 or greater required for "
+                              "MLCS2k2Source. Installed version: " +
+                              scipy.__version__)
+
+        self.name = name
+        self.version = version
+        self._parameters = np.array([1., 0.])
+
+        delta, phase, wave, values = read_griddata_fits(fluxfile)
+
+        self._phase = phase
+        self._wave = wave
+        self._delta = delta
+        self._3d_model_flux = RegularGridInterpolator((delta, phase, wave),
+                                                      values,
+                                                      bounds_error=False,
+                                                      fill_value=0.)
+
+    def _flux(self, phase, wave):
+        # "outer cartesian product" code from fast cartesian_product2 from
+        # http://stackoverflow.com/questions/11144513/numpy-cartesian-product-
+        #     of-x-and-y-array-points-into-single-array-of-2d-points
+        arrays = [[self.parameters[1]], phase, wave]
+        lp = len(phase)
+        lw = len(wave)
+        arr = np.empty((1, lp, lw, 3), dtype=np.float64)
+        for i, a in enumerate(np.ix_(*arrays)):
+            arr[..., i] = a
+        points = arr.reshape((-1, 3))
+        return (self._parameters[0] *
+                self._3d_model_flux(points).reshape(lp, lw))
+
+
 class Model(_ModelBase):
     """An observer-frame model, composed of a Source and zero or more effects.
 
@@ -1387,6 +1467,42 @@ class Model(_ModelBase):
         """
         return _bandmag(self, band, magsys, time)
 
+    def color(self, band1, band2, magsys, time):
+        """band1 - band2 color at the given time(s) through the given pair of
+        bandpasses, and for the given magnitude system.
+
+        Parameters
+        ----------
+        band1 : str
+            Name of first bandpass in registry.
+        band2 : str
+            Name of second bandpass in registry.
+        magsys : str
+            Name of `~sncosmo.MagSystem` in registry.
+        time : float or list_like
+            Observer-frame time(s) in days.
+
+        Returns
+        -------
+        mag : float or `~numpy.ndarray`
+            Color for each item in time, band, magsys.
+            The return value is a float if all parameters are not iterables.
+            The return value is an `~numpy.ndarray` if phase is iterable.
+        """
+
+        if (((isiterable(band1)) and
+           not (isinstance(band1, six.string_types))) or
+           ((isiterable(band2)) and
+           not (isinstance(band2, six.string_types)))):
+            raise TypeError("Band arguments must be scalars.")
+
+        if ((isiterable(magsys)) and
+           not (isinstance(magsys, six.string_types))):
+            raise TypeError("Magnitude system argument must be scalar.")
+
+        return (self.bandmag(band1, magsys, time) -
+                self.bandmag(band2, magsys, time))
+
     def source_peakabsmag(self, band, magsys, cosmo=cosmology.WMAP9):
         return (self._source.peakmag(band, magsys) -
                 cosmo.distmod(self._parameters[0]).value)
@@ -1462,7 +1578,7 @@ class CCM89Dust(PropagationEffect):
     """Cardelli, Clayton, Mathis (1989) extinction model dust."""
     _param_names = ['ebv', 'r_v']
     param_names_latex = ['E(B-V)', 'R_V']
-    _minwave = 909.09
+    _minwave = 1000.
     _maxwave = 33333.33
 
     def __init__(self):

@@ -43,7 +43,7 @@ A Model in sncosmo consists of
 
 * **One "source"** A model of the spectral evolution of the source
   (e.g., a supernova).
-* **Zero or more "propagation effects"** Models of how interveneing structures
+* **Zero or more "propagation effects"** Models of how intervening structures
   (e.g., host galaxy dust, milky way dust) affect the spectrum.
 
 In the above example, we created a model with no propagation effects,
@@ -106,28 +106,29 @@ source. In this case, the source is a simple spectral timeseries that
 can only be scaled up and down. Other sources could have other
 parameters that affect the shape of the spectrum at each phase.
 
-For a given model, you can set the `amplitude` (or `x0` in case you
+For a given model, you can set the ``amplitude`` (or ``x0`` in case you
 are using a SALT model) according to a desired absolute magnitude in a
 specific band by using the method
-`model.set_source_peakabsmag()`. Note that the redshift `z` affects
+`~sncosmo.Model.set_source_peakabsmag()`. Note that the redshift ``z`` affects
 your result. Therefore, you could specify:
 
      >>> model.set(z=1.6)
      >>> model.set_source_peakabsmag(-19.0, 'bessellb', 'ab')
 
 Specifically, for SALT models, it is recommended to call
-`model.set_source_peakabsmag()` after setting the other model
-parameters, such as `x1` and `c`. It probably won't make a difference
-if you are using `'bessellb'`, but if you were setting the absolute
-magnitude in another band, it would make a small difference.
+`~sncosmo.Model.set_source_peakabsmag()` after setting the other model
+parameters, such as ``x1`` and ``c``. It probably won't make a
+difference if you are using the ``'bessellb'`` bandpass, but if you
+were setting the absolute magnitude in another band, it would make a
+small difference.
 
 The reason for this peculiarity is that "absolute magnitude" is not a
-parameter in the SALT2 model, per se. The parameters are `x0`, `x1`,
-`c`, `t0` and `z`. `x0` is a simple multiplicative scaling factor on
-the whole spectral timeseries. The set_source_peakabsmag() method is a
-convenience for setting `x0` such that the integrated flux through a
+parameter in the SALT2 model, per se. The parameters are ``x0``, ``x1``,
+``c``, ``t0``, and ``z``. ``x0`` is a simple multiplicative scaling factor on
+the whole spectral timeseries. The ``set_source_peakabsmag()`` method is a
+convenience for setting ``x0`` such that the integrated flux through a
 given bandpass is as desired. Since the integrated flux depends on the
-spectral shape, it will depend on `x1` and `c`.
+spectral shape, it will depend on ``x1`` and ``c``.
 
 Creating a model with a source and effect(s)
 ============================================
@@ -225,10 +226,17 @@ First, load the dust map (do this only once)::
 .. note::
 
    This supposes that you've downloaded the full resolution E(B-V)
-   maps from `this website
-   <http://www.astro.princeton.edu/~schlegel/dust/data/data.html>`_
-   and placed them in the given directory
-   ``"/path/to/dust/maps"``. The directory can also be set in the
+   maps from and placed them in the given directory ``"/path/to/dust/maps"``:
+   
+   - `SFD_dust_4096_ngp.fits <http://sncosmo.github.io/data/dust/SFD_dust_4096_ngp.fits>`_
+   
+   - `SFD_mask_4096_ngp.fits <http://sncosmo.github.io/data/dust/SFD_mask_4096_ngp.fits>`_
+   
+   - `SFD_dust_4096_sgp.fits <http://sncosmo.github.io/data/dust/SFD_dust_4096_sgp.fits>`_
+   
+   - `SFD_mask_4096_sgp.fits <http://sncosmo.github.io/data/dust/SFD_mask_4096_sgp.fits>`_
+
+   The directory can also be set in the
    sncosmo configuration file, in which case you can just do
    ``sncosmo.SFD98Map()``. See `~sncosmo.SFD98Map` for more details.
 
