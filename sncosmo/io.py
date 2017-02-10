@@ -102,7 +102,6 @@ def read_griddata_ascii(name_or_obj):
     f.close()
     return np.array(x0), np.array(x1), np.array(y)
 
-
 def read_griddata_fits(name_or_obj, ext=0):
     """Read a multi-dimensional grid of data from a FITS file, where the
     grid coordinates are encoded in the FITS-WCS header keywords.

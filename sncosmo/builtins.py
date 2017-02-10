@@ -171,6 +171,14 @@ def load_timeseries_fits_local(pkg_data_name, name=None, version=None):
     phase, wave, flux = io.read_griddata_fits(fname)
     return TimeSeriesSource(phase, wave, flux, name=name, version=version)
 
+def load_timeseries_ascii_local(pkg_data_name, zero_before=False,
+                                name=None, version=None):
+    fname = get_pkg_data_filename(pkg_data_name)
+    phase, wave, flux = io.read_griddata_ascii(fname)
+    #for i in range(len(wave)):
+    #    wave[i] = (np.array(wave[i])/10).tolist()  # converting to Angstroms
+    return TimeSeriesSource(phase, wave, flux, name=name, version=version,
+                            zero_before=zero_before)
 
 def load_salt2model(relpath, name=None, version=None):
     abspath = get_abspath(relpath, name, version=version)
@@ -632,6 +640,61 @@ for name, fn in [('whalen-z15b', 'popIII-z15B.sed.restframe10pc.dat'),
     registry.register_loader(Source, name, load_timeseries_ascii,
                              args=[relpath, True], version='1.0', meta=meta)
 
+
+# Low-z Type Ia SEDs that extend to the NIR,
+# from A. Avelino and A. Friedman 2016 (private communication to S. Rodney)
+meta = {'type': 'lowzIa',
+        'subclass': '`~sncosmo.TimeSeriesSource`',
+        'reference': ('Avelino16',
+                      'Avelino and Friedman, Priv. Comm. 2016'),
+        'note': "private communication (A. Avelino, March 2016)."}
+
+for name in ['sn1998bu_CfA', 'sn1999cl_CfA', 'sn1999cl_LCO', 'sn1999cl_LOSS',
+             'sn1999cp_LCO', 'sn1999cp_LOSS', 'sn1999ek_LCO', 'sn1999ee_LCO',
+             'sn1999gp_CfA', 'sn1999gp_LCO', 'sn1999gp_LOSS', 'sn2000E_ESO',
+             'sn2000bh_LCO', 'sn2000ca_LCO', 'sn2000ce_LCO', 'sn2001ba_LCO',
+             'sn2001bt_LCO', 'sn2001cn_LCO', 'sn2001cz_LCO', 'sn2001el_CTIO',
+             'sn2002dj_ESO', 'sn2002dj_LOSS', 'sn2002fk_LOSS', 'sn2003cg_LOSS',
+             'sn2003du_LOSS', 'sn2003hv_LOSS', 'sn2004S_CTIO', 'sn2003du_ESO',
+             'sn2004S_LOSS', 'sn2004ef_CSP', 'sn2004ef_LOSS', 'sn2004eo_CSP',
+             'sn2004eo_LOSS', 'sn2004ey_CSP', 'sn2004ey_LOSS', 'sn2004gs_CSP',
+             'sn2004gs_LOSS', 'sn2005A_CSP', 'sn2005M_LOSS', 'sn2005M_CSP',
+             'sn2005am_CSP', 'sn2005am_LOSS', 'sn2005bo_CSP', 'sn2005bo_LOSS',
+             'sn2005cf_CfA', 'sn2005cf_LOSS', 'sn2005el_CSP', 'sn2005el_CfA',
+             'sn2005el_LOSS', 'sn2005eq_CSP', 'sn2005eq_LOSS', 'sn2005eq_CfA',
+             'sn2005eu_CfA', 'sn2005eu_LOSS', 'sn2005hc_CSP', 'sn2005hj_CSP',
+             'sn2005iq_CSP', 'sn2005kc_CSP', 'sn2005ki_CSP', 'sn2005ls_CfA',
+             'sn2005na_CSP', 'sn2005na_LOSS', 'sn2006D_CSP', 'sn2006D_CfA',
+             'sn2006D_LOSS', 'sn2006X_CSP', 'sn2006X_CfA', 'sn2006X_LOSS',
+             'sn2006ac_CfA', 'sn2006ax_CSP', 'sn2006bh_CSP', 'sn2006ax_CfA',
+             'sn2006cp_LOSS', 'sn2006dd_CSP', 'sn2006ej_CSP', 'sn2006cp_CfA',
+             'sn2006ej_LOSS', 'sn2006et_CSP', 'sn2006ev_CSP', 'sn2006gj_CSP',
+             'sn2006gr_LOSS', 'sn2006hb_CSP', 'sn2006hb_LOSS', 'sn2006gr_CfA',
+             'sn2006hx_CSP', 'sn2006is_CSP', 'sn2006kf_CSP', 'sn2006le_CfA',
+             'sn2006le_LOSS', 'sn2006lf_CfA', 'sn2006ob_CSP', 'sn2006lf_LOSS',
+             'sn2006os_CSP', 'sn2007A_CSP', 'sn2007S_CSP', 'sn2007S_CfA',
+             'sn2007af_CSP', 'sn2007af_LOSS', 'sn2007as_CSP', 'sn2007bc_CSP',
+             'sn2007bc_LOSS', 'sn2007bd_CSP', 'sn2007bm_CSP', 'sn2007ca_CSP',
+             'sn2007ca_CfA', 'sn2007ca_LOSS', 'sn2007co_CfA', 'sn2007co_LOSS',
+             'sn2007cq_LOSS', 'sn2007hx_CSP', 'sn2007jg_CSP', 'sn2007cq_CfA',
+             'sn2007le_CSP', 'sn2007le_CfA', 'sn2007le_LOSS', 'sn2007nq_CSP',
+             'sn2007on_CSP', 'sn2007qe_CfA', 'sn2007qe_LOSS', 'sn2007sr_CSP',
+             'sn2007sr_LOSS', 'sn2008C_CSP', 'sn2008C_LOSS', 'sn2008R_CSP',
+             'sn2008Z_CfA', 'sn2008Z_LOSS', 'sn2008bc_CSP', 'sn2008bq_CSP',
+             'sn2008fp_CSP', 'sn2008gb_CfA', 'sn2008gp_CSP', 'sn2008gl_CfA',
+             'sn2008hm_CfA', 'sn2008hv_CSP', 'sn2008hv_CfA', 'sn2008hs_CfA',
+             'sn2008ia_CSP', 'sn2009D_CfA', 'sn2009al_CfA', 'sn2009ad_CfA',
+             'sn2009bv_CfA', 'sn2009do_CfA', 'sn2009ds_CfA', 'sn2009an_CfA',
+             'sn2009jr_CfA', 'sn2009kk_CfA', 'sn2009kq_CfA', 'sn2009fv_CfA',
+             'sn2009le_CfA', 'sn2009lf_CfA', 'sn2009na_CfA', 'sn2010Y_CfA',
+             'sn2010ag_CfA', 'sn2010dw_CfA', 'sn2010ju_CfA', 'sn2010ai_CfA',
+             'sn2010kg_CfA', 'sn2011K_CfA', 'sn2011ae_CfA', 'sn2011B_CfA',
+             'sn2011df_CfA', 'sn2011ao_CfA', 'sn2011by_CfA',
+             'snf20080514-002_LOSS', 'snf20080522-000_CfA']:
+    relpath = 'data/models/lowzIa/' + name + '.dat'
+    registry.register_loader(Source, name,
+                             load_timeseries_ascii_local,
+                             args=[relpath, True], version='1.0', meta=meta)
 
 # MLCS2k2
 def load_mlcs2k2(relpath, name=None, version=None):
