@@ -1,13 +1,39 @@
-from __future__ import absolute_import
+from __future__ import absolute_import, division
 
+from collections import OrderedDict
 import os
 import sys
 import math
 import warnings
 import socket
+import codecs
 
 import numpy as np
 from scipy import integrate, optimize
+from astropy.extern import six
+
+
+def dict_to_array(d):
+    """Convert a dictionary of lists (or single values) to a structured
+    numpy.ndarray."""
+
+    # Convert all lists/values to 1-d arrays, in order to let numpy
+    # figure out the necessary size of the string arrays.
+    new_d = OrderedDict()
+    for key in d:
+        new_d[key] = np.atleast_1d(d[key])
+
+    # Determine dtype of output array.
+    dtype = [(key, arr.dtype)
+             for key, arr in six.iteritems(new_d)]
+
+    # Initialize ndarray and then fill it.
+    col_len = max([len(v) for v in new_d.values()])
+    result = np.empty(col_len, dtype=dtype)
+    for key in new_d:
+        result[key] = new_d[key]
+
+    return result
 
 
 def format_value(value, error=None, latex=False):
@@ -193,8 +219,8 @@ def _download_file(remote_url, target):
     """
 
     from contextlib import closing
-    from six.moves.urllib.request import urlopen, Request
-    from six.moves.urllib.error import URLError
+    from astropy.extern.six.moves.urllib.request import urlopen, Request
+    from astropy.extern.six.moves.urllib.error import URLError
     from astropy.utils.console import ProgressBarOrSpinner
     from astropy.utils.data import conf
 
@@ -272,7 +298,7 @@ def download_file(remote_url, local_name):
 
     if remote_url.endswith(".gz"):
         import io
-        from astropy.utils.compat import gzip
+        import gzip
 
         buf = io.BytesIO()
         _download_file(remote_url, buf)
@@ -325,3 +351,187 @@ def download_dir(remote_url, dirname):
     tf.extractall(path=dirname)
     tf.close()
     buf.close()  # buf not closed when tf is closed.
+
+
+class DataMirror(object):
+    """Lazy fetcher for remote data.
+
+    When asked for local absolute path to a file or directory, DataMirror
+    checks if the file or directory exists locally and, if so, returns it.
+
+    If it doesn't exist, it first determines where to get it from.
+    It first downloads the file ``{remote_root}/redirects.json`` and checks
+    it for a redirect from ``{relative_path}`` to a full URL. If no redirect
+    exists, it uses ``{remote_root}/{relative_path}`` as the URL.
+
+    It downloads then downloads the URL to ``{rootdir}/{relative_path}``.
+
+    For directories, ``.tar.gz`` is appended to the
+    ``{relative_path}`` before the above is done and then the
+    directory is unpacked locally.
+
+    Parameters
+    ----------
+    rootdir : str or callable
+
+        The local root directory, or a callable that returns the local root
+        directory given no parameters. (The result of the call is cached.)
+        Using a callable allows one to customize the discovery of the root
+        directory (e.g., from a config file), and to defer that discovery
+        until it is needed.
+
+    remote_root : str
+        Root URL of the remote server.
+    """
+
+    def __init__(self, rootdir, remote_root):
+        if not remote_root.endswith('/'):
+            remote_root = remote_root + '/'
+
+        self._checked_rootdir = None
+        self._rootdir = rootdir
+        self._remote_root = remote_root
+
+        self._redirects = None
+
+    def rootdir(self):
+        """Return the path to the local data directory, ensuring that it
+        exists"""
+
+        if self._checked_rootdir is None:
+
+            # If the supplied value is a string, use it. Otherwise
+            # assume it is a callable that returns a string)
+            rootdir = (self._rootdir
+                       if isinstance(self._rootdir, six.string_types)
+                       else self._rootdir())
+
+            # Check existance
+            if not os.path.isdir(rootdir):
+                raise Exception("data directory {!r} not an existing "
+                                "directory".format(rootdir))
+
+            # Cache value for future calls
+            self._checked_rootdir = rootdir
+
+        return self._checked_rootdir
+
+    def _fetch_redirects(self):
+        from astropy.extern.six.moves.urllib.request import urlopen
+        import json
+
+        f = urlopen(self._remote_root + "redirects.json")
+        reader = codecs.getreader("utf-8")
+        self._redirects = json.load(reader(f))
+        f.close()
+
+    def _get_url(self, remote_relpath):
+        if self._redirects is None:
+            self._fetch_redirects()
+
+        if remote_relpath in self._redirects:
+            return self._redirects[remote_relpath]
+        else:
+            return self._remote_root + remote_relpath
+
+    def abspath(self, relpath, isdir=False):
+        """Return absolute path to file or directory, ensuring that it exists.
+
+        If ``isdir``, look for ``{relpath}.tar.gz`` on the remote server and
+        unpackage it.
+
+        Otherwise, just look for ``{relpath}``. If redirect points to a gz, it
+        will be uncompressed."""
+
+        abspath = os.path.join(self.rootdir(), relpath)
+
+        if not os.path.exists(abspath):
+            if isdir:
+                url = self._get_url(relpath + ".tar.gz")
+
+                # Download and unpack a directory.
+                download_dir(url, os.path.dirname(abspath))
+
+                # ensure that tarfile unpacked into the expected directory
+                if not os.path.exists(abspath):
+                    raise RuntimeError("Tarfile not unpacked into expected "
+                                       "subdirectory. Please file an issue.")
+            else:
+                url = self._get_url(relpath)
+                download_file(url, abspath)
+
+        return abspath
+
+
+def alias_map(aliased, aliases, required=()):
+    """For each key in ``aliases``, find the item in ``aliased`` matching
+    exactly one of the corresponding items in ``aliases``.
+
+    Parameters
+    ----------
+    aliased : list of str
+        Input keys, will be values in output map.
+    aliases : dict of sets
+        Dictionary where keys are "canonical name" and values are sets of
+        possible aliases.
+    required : list_like
+        Keys in ``aliases`` that are considered required. An error is raised
+        if no alias is found in ``aliased``.
+
+
+    Returns
+    -------
+
+    Example::
+
+        >>> aliases = {'a':set(['a', 'a_']), 'b':set(['b', 'b_'])}
+        >>> alias_map(['A', 'B_', 'foo'], aliases)
+        {'a': 'A', 'b': 'B_'}
+
+
+
+    """
+    lowered_to_orig = {key.lower(): key for key in aliased}
+    lowered = set(lowered_to_orig.keys())
+    mapping = {}
+    for key, key_aliases in aliases.items():
+        common = lowered & key_aliases
+        if len(common) == 1:
+            mapping[key] = lowered_to_orig[common.pop()]
+
+        elif len(common) == 0 and key in required:
+            raise ValueError('no alias found for {!r} (possible '
+                             'case-independent aliases: {})'.format(
+                                 key,
+                                 ', '.join(repr(ka) for ka in key_aliases)))
+        elif len(common) > 1:
+            raise ValueError('multiple aliases found for {!r}: {}'
+                             .format(key, ', '.join(repr(a) for a in common)))
+
+    return mapping
+
+
+def integration_grid(low, high, target_spacing):
+    """Divide the range between `start` and `stop` into uniform bins
+    with spacing less than or equal to `target_spacing` and return the
+    bin midpoints and the actual spacing."""
+
+    range_diff = high - low
+    spacing = range_diff / int(math.ceil(range_diff / target_spacing))
+    grid = np.arange(low + 0.5 * spacing, high, spacing)
+
+    return grid, spacing
+
+
+warned = []  # global used in warn_once
+
+
+def warn_once(name, depver, rmver, extra=None):
+    global warned
+    if name not in warned:
+        msg = ("{} is deprecated in sncosmo {} "
+               "and will be removed in sncosmo {}".format(name, depver, rmver))
+        if extra is not None:
+            msg += " " + extra
+        warnings.warn(msg)
+        warned.append(name)

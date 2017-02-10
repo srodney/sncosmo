@@ -103,6 +103,11 @@ class TestSALT2Source:
                                           lcrv01file=files[5],
                                           cdfile=cdfile)
 
+        for f in files:
+            f.close()
+        cdfile.close()
+        clfile.close()
+
         def test_bandflux_rcov(self):
 
             # component 1:
@@ -163,8 +168,8 @@ class TestModel:
 
     def test_set_source_peakabsmag(self):
         # Both Bandpass and str should work
-        band = sncosmo.get_bandpass('desg')
-        self.model.set_source_peakabsmag(-19.3, 'desg', 'ab')
+        band = sncosmo.get_bandpass('bessellb')
+        self.model.set_source_peakabsmag(-19.3, 'bessellb', 'ab')
         self.model.set_source_peakabsmag(-19.3, band, 'ab')
 
     def test_str(self):

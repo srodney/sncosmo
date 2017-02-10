@@ -36,6 +36,8 @@ htmlcov
 #  Documentation
 docs/_build
 docs/api
+docs/examples
+docs/modules
 
 # Other generated files
 MANIFEST
@@ -50,3 +52,9 @@ sncosmo/cython_version.py
 
 # ipython notebooks
 *.ipynb
+
+# misc helpers
+misc/Make.user
+misc/*.o
+misc/*.d
+misc/test-salt2model

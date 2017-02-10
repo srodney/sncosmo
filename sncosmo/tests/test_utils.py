@@ -1,10 +1,27 @@
 # Licensed under a 3-clause BSD style license - see LICENSES
 
+from tempfile import mkdtemp
+import os
+
 import numpy as np
 from numpy.testing import assert_allclose, assert_approx_equal
 from scipy.stats import norm
+import pytest
 
 from sncosmo import utils
+
+
+def test_result():
+    res = utils.Result(a=1, b=2)
+    assert res.a == 1
+    assert res.b == 2
+
+    # test deprecating result attributes
+    res.__dict__['deprecated']['c'] = (2, "Use b instead")
+
+    # can't test warnings currently because bundled version of pytest in
+    # astropy is too old to support pytest.warns (need 2.8)
+    assert res.c == 2
 
 
 def test_format_value():
@@ -31,3 +48,23 @@ def test_ppf():
     x = np.linspace(0.05, 0.95, 5.)
     y = utils.ppf(priordist.pdf, x, -np.inf, np.inf)
     assert_allclose(y, priordist.ppf(x), atol=1.e-10)
+
+
+def test_alias_map():
+    mapping = utils.alias_map(['A', 'B_', 'foo'],
+                              {'a': set(['a', 'a_']), 'b': set(['b', 'b_'])})
+    assert mapping == {'a': 'A', 'b': 'B_'}
+
+
+def test_data_mirror_rootdir():
+    dirname = mkdtemp()
+
+    # rootdir is a string
+    mirror = utils.DataMirror(dirname, "url_goes_here")
+    assert mirror.rootdir() == dirname
+
+    # rootdir is a callable
+    mirror = utils.DataMirror(lambda: dirname, "url_goes_here")
+    assert mirror.rootdir() == dirname
+
+    os.rmdir(dirname)

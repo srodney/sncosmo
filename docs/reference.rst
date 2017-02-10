@@ -3,16 +3,6 @@
 Reference / API
 ***************
 
-Built-ins
-=========
-
-.. toctree::
-   :maxdepth: 1
-
-   builtins/sources
-   builtins/bandpasses
-   builtins/magsystems
-
 .. currentmodule:: sncosmo
 
 Model & Components
@@ -74,8 +64,6 @@ maps, and more.*
    read_griddata_fits
    write_griddata_ascii
    write_griddata_fits
-   get_ebv_from_map
-   SFD98Map
 
 .. _fitting-api:
 
@@ -96,6 +84,7 @@ Fitting Photometric Data
 .. autosummary::
    :toctree: api
 
+   select_data
    chisq
    flatten_result
 
@@ -109,7 +98,7 @@ Plotting
    :toctree: api
 
    plot_lc
-   animate_source
+
 
 Simulation
 ==========

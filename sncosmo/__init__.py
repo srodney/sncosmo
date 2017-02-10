@@ -153,17 +153,20 @@ if not _ASTROPY_SETUP_:
     del os, ConfigItem, ConfigNamespace, update_default_config
 
     # Do all the necessary imports.
-    from .dustmap import *
-    from .spectral import *
+    from .bandpasses import *
+    from .magsystems import *
+    from .spectrum import *
     from .models import *
     from .io import *
     from .snanaio import *
     from .fitting import *
     from .simulation import *
     from .plotting import *
+    from .photdata import *
     from .registry import *
 
     from . import registry  # deprecated in v1.2; use previous import.
+    from ._deprecated import *
 
     # Register all the built-ins.
     from .builtins import *

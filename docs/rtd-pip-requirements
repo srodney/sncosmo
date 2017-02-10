@@ -1,8 +1,12 @@
-# pin sphinx to work around https://github.com/sphinx-doc/sphinx/issues/1822
-sphinx==1.2.3
+cython
 numpy
 matplotlib
 scipy
-Cython
+extinction
 astropy
 astropy_helpers
+sphinx_gallery
+pillow
+iminuit
+emcee
+numpydoc

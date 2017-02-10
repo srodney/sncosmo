@@ -4,6 +4,7 @@
 
 import abc
 import os
+from collections import OrderedDict as odict
 from copy import copy as cp
 from textwrap import dedent
 from math import ceil
@@ -13,25 +14,24 @@ import numpy as np
 from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                RectBivariateSpline as Spline2d,
                                splmake, spleval)
-from astropy.utils import OrderedDict as odict
 from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
 from astropy.extern import six
+import extinction
 
 from .io import read_griddata_ascii, read_griddata_fits
-
-from . import registry
-from .spectral import get_bandpass, get_magsystem, Bandpass, HC_ERG_AA
-try:
-    # Not guaranteed available at setup time
-    from ._extinction import ccm89, od94, f99kknots, f99uv
-except ImportError:
-    if not _ASTROPY_SETUP_:
-        raise
+from ._registry import Registry
+from .bandpasses import get_bandpass, Bandpass
+from .magsystems import get_magsystem
+from .salt2utils import BicubicInterpolator, SALT2ColorLaw
+from .utils import integration_grid
+from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
 
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
            'SALT2Source', 'MLCS2k2Source', 'Model',
            'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust']
+
+_SOURCES = Registry()
 
 
 def _check_for_fitpack_error(e, a, name):
@@ -86,13 +86,42 @@ def get_source(name, version=None, copy=False):
         else:
             return name
     else:
-        return cp(registry.retrieve(Source, name, version=version))
+        return cp(_SOURCES.retrieve(name, version=version))
+
+
+def _bandflux_single(model, band, time_or_phase):
+    """Synthetic photometry of model through a single bandpass.
+
+    Parameters
+    ----------
+    model : Source or Model
+    band : Bandpass
+    time_or_phase : `~numpy.ndarray` (1-d)
+    """
+
+    # Check that bandpass wavelength range is fully contained in model
+    # wavelength range.
+    if (band.minwave() < model.minwave() or band.maxwave() > model.maxwave()):
+        raise ValueError('bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
+                         'outside spectral range [{3:.6g}, .., {4:.6g}]'
+                         .format(band.name, band.minwave(), band.maxwave(),
+                                 model.minwave(), model.maxwave()))
+
+    # Set up wavelength grid. Spacing (dwave) evenly divides the bandpass,
+    # closest to 5 angstroms without going over.
+    wave, dwave = integration_grid(band.minwave(), band.maxwave(),
+                                   MODEL_BANDFLUX_SPACING)
+    trans = band(wave)
+    f = model._flux(time_or_phase, wave)
+
+    return np.sum(wave * trans * f, axis=1) * dwave / HC_ERG_AA
 
 
 def _bandflux(model, band, time_or_phase, zp, zpsys):
     """Support function for bandflux in Source and Model.
     This is necessary to have outside because ``phase`` is used in Source
-    and ``time`` is used in Model.
+    and ``time`` is used in Model, and we want the method signatures to
+    have the right variable name.
     """
 
     if zp is not None and zpsys is None:
@@ -121,17 +150,7 @@ def _bandflux(model, band, time_or_phase, zp, zpsys):
         mask = band == b
         b = get_bandpass(b)
 
-        # Raise an exception if bandpass is out of model range.
-        if (b.wave[0] < model.minwave() or b.wave[-1] > model.maxwave()):
-            raise ValueError(
-                'bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
-                'outside spectral range [{3:.6g}, .., {4:.6g}]'
-                .format(b.name, b.wave[0], b.wave[-1],
-                        model.minwave(), model.maxwave()))
-
-        # Get the flux
-        f = model._flux(time_or_phase[mask], b.wave)
-        fsum = np.sum(f * b.trans * b.wave * b.dwave, axis=1) / HC_ERG_AA
+        fsum = _bandflux_single(model, b, time_or_phase[mask])
 
         if zp is not None:
             zpnorm = 10.**(0.4 * zp[mask])
@@ -207,6 +226,7 @@ class _ModelBase(object):
             self._parameters[i] = val
 
     def get(self, name):
+        """Get parameter of the model by name."""
         try:
             i = self._param_names.index(name)
         except ValueError:
@@ -403,13 +423,13 @@ class Source(_ModelBase):
         a, b, c = np.linalg.solve(A, y)
         return -b / (2 * a)
 
-    def peakmag(self, band, magsys, sampling=1.):
-        """Calculate peak apparent magnitude in rest-frame bandpass."""
+    def peakmag(self, band, magsys, sampling=1.0):
+        """Peak apparent magnitude in rest-frame bandpass."""
 
         peakphase = self.peakphase(band, sampling=sampling)
         return self.bandmag(band, magsys, peakphase)
 
-    def set_peakmag(self, m, band, magsys, sampling=1.):
+    def set_peakmag(self, m, band, magsys, sampling=1.0):
         """Set peak apparent magnitude in rest-frame bandpass."""
 
         m_current = self.peakmag(band, magsys, sampling=sampling)
@@ -489,7 +509,7 @@ class TimeSeriesSource(Source):
         self._phase = phase
         self._wave = wave
         self._parameters = np.array([1.])
-        self._model_flux = Spline2d(phase, wave, flux, kx=2, ky=2)
+        self._model_flux = Spline2d(phase, wave, flux, kx=3, ky=3)
         self._zero_before = zero_before
 
     def _flux(self, phase, wave):
@@ -532,7 +552,7 @@ class StretchSource(Source):
         self._phase = phase
         self._wave = wave
         self._parameters = np.array([1., 1.])
-        self._model_flux = Spline2d(phase, wave, flux, kx=2, ky=2)
+        self._model_flux = Spline2d(phase, wave, flux, kx=3, ky=3)
 
     def minphase(self):
         return self._parameters[1] * self._phase[0]
@@ -553,9 +573,12 @@ class SALT2Source(Source):
     .. math::
 
        F(t, \lambda) = x_0 (M_0(t, \lambda) + x_1 M_1(t, \lambda))
-                       \\times CL(\lambda)^c
+                       \\times 10^{-0.4 CL(\lambda) c}
 
-    where ``x0``, ``x1`` and ``c`` are the free parameters of the model.
+    where ``x0``, ``x1`` and ``c`` are the free parameters of the model,
+    ``M_0``, ``M_1`` are the zeroth and first components of the model, and
+    ``CL`` is the colorlaw, which gives the extinction in magnitudes for
+    ``c=1``.
 
     Parameters
     ----------
@@ -636,7 +659,7 @@ class SALT2Source(Source):
         for key in ['M0', 'M1']:
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
             values *= self._SCALE_FACTOR
-            self._model[key] = Spline2d(phase, wave, values, kx=2, ky=2)
+            self._model[key] = BicubicInterpolator(phase, wave, values)
 
             # The "native" phases and wavelengths of the model are those
             # of the first model component.
@@ -647,111 +670,65 @@ class SALT2Source(Source):
         # model covariance is interpolated to 1st order
         for key in ['LCRV00', 'LCRV11', 'LCRV01', 'errscale']:
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
-            self._model[key] = Spline2d(phase, wave, values, kx=1, ky=1)
+            self._model[key] = BicubicInterpolator(phase, wave, values)
+
+        # Set the colorlaw based on the "color correction" file.
+        self._set_colorlaw_from_file(names_or_objs['clfile'])
 
         # Set the color dispersion from "color_dispersion" file
         w, val = np.loadtxt(names_or_objs['cdfile'], unpack=True)
         self._colordisp = Spline1d(w, val,  k=1)  # linear interp.
 
-        # Set the colorlaw based on the "color correction" file.
-        # Then interpolate it to the "native" wavelength grid,
-        # for performance reasons.
-        self._set_colorlaw_from_file(names_or_objs['clfile'])
-        cl = self._colorlaw(self._wave)
-        clbase = 10. ** (-0.4 * cl)
-        self._model['clbase'] = Spline1d(self._wave, clbase, k=1)
-
     def _flux(self, phase, wave):
         m0 = self._model['M0'](phase, wave)
         m1 = self._model['M1'](phase, wave)
         return (self._parameters[0] * (m0 + self._parameters[1] * m1) *
-                self._model['clbase'](wave)**self._parameters[2])
+                10. ** (-0.4 * self._colorlaw(wave) * self._parameters[2]))
 
-    def _errsnakesq(self, wave, phase):
-        """Return the errorsnake squared (model variance) for the given
-        rest-frame phases and rest-frame bandpass central wavelength.
+    def _bandflux_rvar_single(self, band, phase):
+        """Model relative variance for a single bandpass."""
 
-        Note that this is "vectorized" on phase only. Wavelength
-        must be a scalar.
-
-        Parameters
-        ----------
-        wave : float
-            Central wavelength of rest-frame bandpass.
-        phase : 1-d `~numpy.ndarray`
-            Restframe phases.
-
-        Returns
-        -------
-        variance : 1-d `~numpy.ndarray`
-        """
+        # Raise an exception if bandpass is out of model range.
+        if (band.minwave() < self._wave[0] or band.maxwave() > self._wave[-1]):
+            raise ValueError('bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
+                             'outside spectral range [{3:.6g}, .., {4:.6g}]'
+                             .format(band.name, band.wave[0], band.wave[-1],
+                                     self._wave[0], self._wave[-1]))
 
         x1 = self._parameters[1]
+
+        # integrate m0 and m1 components
+        wave, dwave = integration_grid(band.minwave(), band.maxwave(),
+                                       MODEL_BANDFLUX_SPACING)
+        trans = band(wave)
+        m0 = self._model['M0'](phase, wave)
+        m1 = self._model['M1'](phase, wave)
+        tmp = trans * wave
+        f0 = np.sum(m0 * tmp, axis=1) * dwave / HC_ERG_AA
+        m1int = np.sum(m1 * tmp, axis=1) * dwave / HC_ERG_AA
+        ftot = f0 + x1 * m1int
 
         # In the following, the "[:,0]" reduces from a 2-d array of shape
         # (nphase, 1) to a 1-d array.
-        lcrv00 = self._model['LCRV00'](phase, wave)[:, 0]
-        lcrv11 = self._model['LCRV11'](phase, wave)[:, 0]
-        lcrv01 = self._model['LCRV01'](phase, wave)[:, 0]
-        scale = self._model['errscale'](phase, wave)[:, 0]
+        lcrv00 = self._model['LCRV00'](phase, band.wave_eff)[:, 0]
+        lcrv11 = self._model['LCRV11'](phase, band.wave_eff)[:, 0]
+        lcrv01 = self._model['LCRV01'](phase, band.wave_eff)[:, 0]
+        scale = self._model['errscale'](phase, band.wave_eff)[:, 0]
 
-        return scale*scale * (lcrv00 + 2*x1*lcrv01 + x1*x1*lcrv11)
+        v = lcrv00 + 2.0 * x1 * lcrv01 + x1 * x1 * lcrv11
 
-    def _bandflux_rcov(self, band, phase):
-        """Return the model relative covariance of integrated flux through
-        the given restframe bands at the given phases
-
-        band : 1-d `~numpy.ndarray` of `~sncosmo.Bandpass`
-            Bandpasses of observations.
-        phase : 1-d `~numpy.ndarray` (float)
-            Phases of observations. Must be in ascending order.
-        """
-
-        x1 = self._parameters[1]
-
-        # initialize integral arrays
-        f0 = np.zeros(phase.shape, dtype=np.float)
-        m1int = np.zeros(phase.shape, dtype=np.float)
-        cwave = np.zeros(phase.shape, dtype=np.float)  # central wavelengths
-        errsnakesq = np.empty(phase.shape, dtype=np.float)
-
-        # Loop over unique bands
-        for b in set(band):
-            mask = band == b
-            cwave[mask] = b.wave_eff
-
-            # Raise an exception if bandpass is out of model range.
-            if (b.wave[0] < self._wave[0] or b.wave[-1] > self._wave[-1]):
-                raise ValueError(
-                    'bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
-                    'outside spectral range [{3:.6g}, .., {4:.6g}]'
-                    .format(b.name, b.wave[0], b.wave[-1],
-                            self._wave[0], self._wave[-1]))
-
-            m0 = self._model['M0'](phase[mask], b.wave)
-            m1 = self._model['M1'](phase[mask], b.wave)
-
-            tmp = b.trans * b.wave * b.dwave
-            f0[mask] = np.sum(m0 * tmp, axis=1) / HC_ERG_AA
-            m1int[mask] = np.sum(m1 * tmp, axis=1) / HC_ERG_AA
-
-            errsnakesq[mask] = self._errsnakesq(b.wave_eff, phase[mask])
-
-        # 2-d bool array of shape (len(band), len(band)):
-        # true only where bands are same
-        mask = cwave == cwave[:, np.newaxis]
-
-        colorvar = self._colordisp(cwave)**2  # 1-d array
-        colorcov = mask * colorvar  # 2-d * 1-d = 2-d
-
-        # errorsnakesq is supposed to be variance but can go negative
+        # v is supposed to be variance but can go negative
         # due to interpolation.  Correct negative values to some small
         # number. (at present, use prescription of snfit : set
         # negatives to 0.0001)
-        errsnakesq[errsnakesq < 0.] = 0.01*0.01
+        v[v < 0.0] = 0.0001
 
-        f1 = f0 + x1 * m1int
-        return colorcov + np.diagflat((f0 / f1)**2 * errsnakesq)
+        result = v * (f0 / ftot)**2 * scale**2
+
+        # treat cases where ftot is negative the same as snfit
+        result[ftot <= 0.0] = 10000.
+
+        return result
 
     def bandflux_rcov(self, band, phase):
         """Return the *relative* model covariance (or "model error") on
@@ -779,13 +756,15 @@ class SALT2Source(Source):
         .. math::
 
            F_{0, \mathrm{band}}(t) = \int_\lambda M_0(t, \lambda)
-                                     T_\mathrm{band}(\lambda) d\lambda
+                                     T_\mathrm{band}(\lambda)
+                                     \\frac{\lambda}{hc} d\lambda
 
         .. math::
 
            F_{1, \mathrm{band}}(t) = \int_\lambda
                                      (M_0(t, \lambda) + x_1 M_1(t, \lambda))
-                                     T_\mathrm{band}(\lambda) d\lambda
+                                     T_\mathrm{band}(\lambda)
+                                     \\frac{\lambda}{hc} d\lambda
 
         As this first component can sometimes be negative due to
         interpolation, there is a floor applied wherein values less than zero
@@ -819,139 +798,59 @@ class SALT2Source(Source):
             Model relative covariance for given bandpasses and phases.
         """
 
-        try:
-            return _bandflux_rcov(self, band, phase)
-        except ValueError as e:
-            _check_for_fitpack_error(e, phase, 'phase')
-            raise e
+        # construct covariance array with relative variance on diagonal
+        diagonal = np.zeros(phase.shape, dtype=np.float64)
+        for b in set(band):
+            mask = band == b
+            diagonal[mask] = self._bandflux_rvar_single(b, phase[mask])
+        result = np.diagflat(diagonal)
+
+        # add kcorr errors
+        for b in set(band):
+            mask1d = band == b
+            mask2d = mask1d * mask1d[:, None]  # mask for result array
+            kcorrerr = self._colordisp(b.wave_eff)
+            result[mask2d] += kcorrerr**2
+
+        return result
 
     def _set_colorlaw_from_file(self, name_or_obj):
-        """Read color law file and set the internal colorlaw function,
-        as well as some parameters used in that function.
-
-        self._colorlaw (function)
-        self._B_WAVELENGTH (float)
-        self._V_WAVELENGTH (float)
-        self._colorlaw_coeffs (list of float)
-        self._colorlaw_range (tuple) [default is (3000., 7000.)]
-        """
-
-        self._B_WAVELENGTH = 4302.57
-        self._V_WAVELENGTH = 5428.55
+        """Read color law file and set the internal colorlaw function."""
 
         # Read file
         if isinstance(name_or_obj, six.string_types):
-            f = open(name_or_obj, 'rb')
+            f = open(name_or_obj, 'r')
         else:
             f = name_or_obj
         words = f.read().split()
         f.close()
 
         # Get colorlaw coeffecients.
-        npoly = int(words[0])
-        self._colorlaw_coeffs = [float(word) for word in words[1: 1 + npoly]]
+        ncoeffs = int(words[0])
+        colorlaw_coeffs = [float(word) for word in words[1: 1 + ncoeffs]]
 
-        # Look for keywords in the rest of the file.
+        # If there are more than 1+ncoeffs words in the file, we expect them to
+        # be of the form `keyword value`.
         version = 0
         colorlaw_range = [3000., 7000.]
-        for i in range(1+npoly, len(words)):
+        for i in range(1+ncoeffs, len(words), 2):
             if words[i] == 'Salt2ExtinctionLaw.version':
                 version = int(words[i+1])
-            if words[i] == 'Salt2ExtinctionLaw.min_lambda':
+            elif words[i] == 'Salt2ExtinctionLaw.min_lambda':
                 colorlaw_range[0] = float(words[i+1])
-            if words[i] == 'Salt2ExtinctionLaw.max_lambda':
+            elif words[i] == 'Salt2ExtinctionLaw.max_lambda':
                 colorlaw_range[1] = float(words[i+1])
+            else:
+                raise RuntimeError("Unexpected keyword: {}".format(words[i]))
 
         # Set extinction function to use.
         if version == 0:
-            self._colorlaw = self._colorlaw_v0
+            raise Exception("Salt2ExtinctionLaw.version 0 not supported.")
         elif version == 1:
-            self._colorlaw = self._colorlaw_v1
-            self._colorlaw_range = colorlaw_range
+            self._colorlaw = SALT2ColorLaw(colorlaw_range, colorlaw_coeffs)
         else:
             raise Exception('unrecognized Salt2ExtinctionLaw.version: ' +
                             version)
-
-    def _colorlaw_v0(self, wave):
-        """Return the extinction in magnitudes as a function of wavelength,
-        for c=1. This is the version 0 extinction law used in SALT2 1.0 and
-        1.1 (SALT2-1-1).
-
-        Notes
-        -----
-        From SALT2 code comments:
-
-            ext = exp(color * constant *
-                      (l + params(0)*l^2 + params(1)*l^3 + ... ) /
-                      (1 + params(0) + params(1) + ... ) )
-                = exp(color * constant *  numerator / denominator )
-                = exp(color * expo_term )
-        """
-
-        l = ((wave - self._B_WAVELENGTH) /
-             (self._V_WAVELENGTH - self._B_WAVELENGTH))
-
-        coeffs = [0., 1.]
-        coeffs.extend(self._colorlaw_coeffs)
-        coeffs = np.flipud(coeffs)
-        numerator = np.polyval(coeffs, l)  # 0 + 1 * l + p[0] * l^2 + ...
-        denominator = coeffs.sum()         # 0 + 1 + p[0] + p[1] + ...
-
-        return -numerator / denominator
-
-    def _colorlaw_v1(self, wave):
-        """Return the  extinction in magnitudes as a function of wavelength,
-        for c=1. This is the version 1 extinction law used in SALT2 2.0
-        (SALT2-2-0).
-
-        Notes
-        -----
-        From SALT2 code comments:
-
-        if(l_B<=l<=l_R):
-            ext = exp(color * constant *
-                      (alpha*l + params(0)*l^2 + params(1)*l^3 + ... ))
-                = exp(color * constant * P(l))
-
-            where alpha = 1 - params(0) - params(1) - ...
-
-        if (l > l_R):
-            ext = exp(color * constant * (P(l_R) + P'(l_R) * (l-l_R)))
-        if (l < l_B):
-            ext = exp(color * constant * (P(l_B) + P'(l_B) * (l-l_B)))
-        """
-
-        v_minus_b = self._V_WAVELENGTH - self._B_WAVELENGTH
-
-        l = (wave - self._B_WAVELENGTH) / v_minus_b
-        l_lo = (self._colorlaw_range[0] - self._B_WAVELENGTH) / v_minus_b
-        l_hi = (self._colorlaw_range[1] - self._B_WAVELENGTH) / v_minus_b
-
-        alpha = 1. - sum(self._colorlaw_coeffs)
-        coeffs = [0., alpha]
-        coeffs.extend(self._colorlaw_coeffs)
-        coeffs = np.array(coeffs)
-        prime_coeffs = (np.arange(len(coeffs)) * coeffs)[1:]
-
-        extinction = np.empty_like(wave)
-
-        # Blue side
-        idx_lo = l < l_lo
-        p_lo = np.polyval(np.flipud(coeffs), l_lo)
-        pprime_lo = np.polyval(np.flipud(prime_coeffs), l_lo)
-        extinction[idx_lo] = p_lo + pprime_lo * (l[idx_lo] - l_lo)
-
-        # Red side
-        idx_hi = l > l_hi
-        p_hi = np.polyval(np.flipud(coeffs), l_hi)
-        pprime_hi = np.polyval(np.flipud(prime_coeffs), l_hi)
-        extinction[idx_hi] = p_hi + pprime_hi * (l[idx_hi] - l_hi)
-
-        # In between
-        idx_between = np.invert(idx_lo | idx_hi)
-        extinction[idx_between] = np.polyval(np.flipud(coeffs), l[idx_between])
-
-        return -extinction
 
     def colorlaw(self, wave=None):
         """Return the value of the CL function for the given wavelengths.
@@ -965,15 +864,8 @@ class SALT2Source(Source):
         colorlaw : float or `~numpy.ndarray`
             Values of colorlaw function, which can be interpreted as extinction
             in magnitudes.
-
-        Notes
-        -----
-        Note that this is the "exact" colorlaw. For performance reasons, when
-        calculating the model flux, a spline fit to this function is
-        used rather than the function itself. Therefore this will not be
-        *exactly* equivalent to the color law used when evaluating the model
-        flux for arbitrary wavelengths.
         """
+
         if wave is None:
             wave = self._wave
         else:
@@ -1076,7 +968,7 @@ class Model(_ModelBase):
 
     Examples
     --------
-    >>> model = sncosmo.Model(source='hsiao')  # doctest: +SKIP
+    >>> model = sncosmo.Model(source='hsiao')
 
     """
 
@@ -1404,7 +1296,7 @@ class Model(_ModelBase):
         # Note that not all sources have this method. The idea
         # is that this will automatically fail if the method doesn't exist
         # for self._source.
-        rcov = self._source._bandflux_rcov(restband, phase)
+        rcov = self._source.bandflux_rcov(restband, phase)
 
         if ndim == 0:
             return rcov[0, 0]
@@ -1503,29 +1395,106 @@ class Model(_ModelBase):
         return (self.bandmag(band1, magsys, time) -
                 self.bandmag(band2, magsys, time))
 
-    def source_peakabsmag(self, band, magsys, cosmo=cosmology.WMAP9):
-        return (self._source.peakmag(band, magsys) -
+    def source_peakmag(self, band, magsys, sampling=1.0):
+        """Peak apparent magnitude of source in a rest-frame bandpass.
+
+        Note that this is the peak magnitude of just the *source* component
+        of the model, not including effects such as dust.
+
+        Parameters
+        ----------
+        band : str or `~sncosmo.Bandpass`
+            Bandpass or name of bandpass in registry.
+        magsys : str or `~sncosmo.MagSystem`
+            Magnitude system or name of magnitude system in registry.
+        sampling : float, optional
+            Sampling in rest-frame days used to find the peak of the light
+            curve.
+
+        Returns
+        -------
+        float
+            Peak apparent magnitude of just the source component of the model.
+        """
+
+        return self._source.peakmag(band, magsys, sampling=sampling)
+
+    def set_source_peakmag(self, m, band, magsys, sampling=1.0):
+        """Set the amplitude of the source component of the model according to
+        a peak apparent magnitude.
+
+        Note that this is the peak magnitude of just the *source* component
+        of the model, not including effects such as dust.
+
+        Parameters
+        ----------
+        m : float
+            Desired apparent magnitude.
+        band : str or `~sncosmo.Bandpass`
+            Bandpass or name of bandpass in registry.
+        magsys : str or `~sncosmo.MagSystem`
+            Magnitude system or name of magnitude system in registry.
+        sampling : float, optional
+            Sampling in rest-frame days used to find the peak of the light
+            curve. Default is 1.0.
+        """
+        self._source.set_peakmag(m, band, magsys, sampling=sampling)
+
+    def source_peakabsmag(self, band, magsys, sampling=1.0,
+                          cosmo=cosmology.WMAP9):
+        """Peak absolute magnitude of the source in rest-frame bandpass.
+
+        Note that this is the peak absolute magnitude of just the *source*
+        component of the model, not including effects such as dust.
+
+        Parameters
+        ----------
+        band : str or `~sncosmo.Bandpass`
+            Bandpass or name of bandpass in registry.
+        magsys : str or `~sncosmo.MagSystem`
+            Magnitude system or name of magnitude system in registry.
+        sampling : float, optional
+            Sampling in rest-frame days used to find the peak of the light
+            curve. Default is 1.0.
+        cosmo : astropy Cosmology, optional
+            Instance of a cosmology from ``astropy.cosmology``, used to
+            calculate distance modulus, given the model's redshift. Default
+            is WMAP9.
+
+        Returns
+        -------
+        float
+            Peak absolute magnitude of just the source component of the model.
+        """
+        return (self._source.peakmag(band, magsys, sampling=sampling) -
                 cosmo.distmod(self._parameters[0]).value)
 
-    def set_source_peakabsmag(self, absmag, band, magsys,
+    def set_source_peakabsmag(self, absmag, band, magsys, sampling=1.0,
                               cosmo=cosmology.WMAP9):
         """Set the amplitude of the source component of the model according to
-        the desired absolute magnitude(s) in the specified band(s).
+        the desired absolute magnitude in the specified band.
 
         Parameters
         ----------
         absmag : float
             Desired absolute magnitude.
-        band : str or list_like
-            Name(s) of bandpass in registry.
-        magsys : str or list_like
-            Name(s) of `~sncosmo.MagSystem` in registry.
+        band : str or `~sncosmo.Bandpass`
+            Bandpass or name of bandpass in registry.
+        magsys : str or `~sncosmo.MagSystem`
+            Magnitude system or name of magnitude system in registry.
+        sampling : float, optional
+            Sampling in rest-frame days used to find the peak of the light
+            curve. Default is 1.0.
+        cosmo : astropy Cosmology, optional
+            Instance of a cosmology from ``astropy.cosmology``, used to
+            calculate distance modulus, given the model's redshift. Default
+            is WMAP9.
         """
 
         if self._parameters[0] <= 0.:
             raise ValueError('absolute magnitude undefined when z<=0.')
         m = absmag + cosmo.distmod(self._parameters[0]).value
-        self._source.set_peakmag(m, band, magsys)
+        self._source.set_peakmag(m, band, magsys, sampling=sampling)
 
     def _headsummary(self):
         head = "<{0:s} at 0x{1:x}>".format(self.__class__.__name__, id(self))
@@ -1546,6 +1515,9 @@ class Model(_ModelBase):
                     effect_frames=self._effect_frames)
         new._parameters[0:2] = self._parameters[0:2]
         return new
+
+    def __deepcopy__(self, memo):
+        return cp(self)
 
 
 class PropagationEffect(_ModelBase):
@@ -1586,9 +1558,8 @@ class CCM89Dust(PropagationEffect):
 
     def propagate(self, wave, flux):
         """Propagate the flux."""
-        a_v = self._parameters[0] * self._parameters[1]
-        trans = 10.**(-0.4 * ccm89(wave, a_v, self._parameters[1]))
-        return trans * flux
+        ebv, r_v = self._parameters
+        return extinction.apply(extinction.ccm89(wave, ebv * r_v, r_v), flux)
 
 
 class OD94Dust(PropagationEffect):
@@ -1603,42 +1574,24 @@ class OD94Dust(PropagationEffect):
 
     def propagate(self, wave, flux):
         """Propagate the flux."""
-        a_v = self._parameters[0] * self._parameters[1]
-        trans = 10.**(-0.4 * od94(wave, a_v, self._parameters[1]))
-        return trans * flux
+        ebv, r_v = self._parameters
+        return extinction.apply(extinction.odonnell94(wave, ebv * r_v, r_v),
+                                flux)
 
 
 class F99Dust(PropagationEffect):
     """Fitzpatrick (1999) extinction model dust with fixed R_V."""
     _minwave = 909.09
     _maxwave = 60000.
-    _XKNOTS = 1.e4 / np.array([np.inf, 26500., 12200., 6000., 5470.,
-                               4670., 4110., 2700., 2600.])
 
     def __init__(self, r_v=3.1):
         self._param_names = ['ebv']
         self.param_names_latex = ['E(B-V)']
         self._parameters = np.array([0.])
         self._r_v = r_v
-
-        kknots = f99kknots(self._XKNOTS, r_v)
-        self._spline = splmake(self._XKNOTS, kknots, order=3)
+        self._f = extinction.Fitzpatrick99(r_v=r_v)
 
     def propagate(self, wave, flux):
-
-        ext = np.empty(len(wave), dtype=np.float)
-
-        # Analytic function in the UV.
-        uvmask = wave < 2700.
-        if np.any(uvmask):
-            a_v = self._parameters[0] * self._r_v
-            ext[uvmask] = f99uv(wave[uvmask], a_v, self._r_v)
-
-        # Spline in the Optical/IR
-        oirmask = ~uvmask
-        if np.any(oirmask):
-            k = spleval(self._spline, 1.e4 / wave[oirmask])
-            ext[oirmask] = self._parameters[0] * (k + self._r_v)
-
-        trans = 10.**(-0.4 * ext)
-        return trans * flux
+        """Propagate the flux."""
+        ebv = self._parameters[0]
+        return extinction.apply(self._f(wave, ebv * self._r_v), flux)

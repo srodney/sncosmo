@@ -4,19 +4,21 @@
 from __future__ import print_function
 
 from warnings import warn
+import math
 import os
 import sys
 import re
 import json
+from collections import OrderedDict
 
 import numpy as np
-from astropy.utils import OrderedDict as odict
 from astropy.table import Table
 from astropy.io import fits
 from astropy import wcs
 from astropy.extern import six
 
-from .photdata import dict_to_array
+from .utils import dict_to_array
+from .bandpasses import get_bandpass
 
 __all__ = ['read_lc', 'write_lc', 'load_example_data', 'read_griddata_ascii',
            'read_griddata_fits', 'write_griddata_ascii', 'write_griddata_fits']
@@ -161,7 +163,7 @@ def write_griddata_ascii(x0, x1, y, name_or_obj):
     """
 
     if isinstance(name_or_obj, six.string_types):
-        f = open(name_or_obj, 'r')
+        f = open(name_or_obj, 'w')
     else:
         f = name_or_obj
 
@@ -206,13 +208,9 @@ def write_griddata_fits(x0, x1, y, name_or_obj):
 
 # -----------------------------------------------------------------------------
 # Reader: ascii
-def _read_ascii(f, **kwargs):
+def _read_ascii(f, delim=None, metachar='@', commentchar='#'):
 
-    delim = kwargs.get('delim', None)
-    metachar = kwargs.get('metachar', '@')
-    commentchar = kwargs.get('commentchar', '#')
-
-    meta = odict()
+    meta = OrderedDict()
     colnames = []
     cols = []
     readingdata = False
@@ -248,14 +246,35 @@ def _read_ascii(f, **kwargs):
         for col, item in zip(cols, items):
             col.append(_cast_str(item))
 
-    data = odict(zip(colnames, cols))
+    data = OrderedDict(zip(colnames, cols))
     return meta, data
 
 
 # -----------------------------------------------------------------------------
 # Reader: salt2
 
-def _read_salt2(f, **kwargs):
+def _expand_bands(band_list, meta):
+    """Given a list containing band names, return a list of Bandpass objects"""
+
+    # Treat dependent bandpasses based on metadata contents
+    # TODO: need a way to figure out which bands are position dependent!
+    #       for now, we assume *all* or none are.
+    if "X_FOCAL_PLANE" in meta and "Y_FOCAL_PLANE" in meta:
+        r = math.sqrt(meta["X_FOCAL_PLANE"]**2 + meta["Y_FOCAL_PLANE"]**2)
+
+        # map name to object for unique bands
+        name_to_band = {name: get_bandpass(name, r)
+                        for name in set(band_list)}
+
+        return [name_to_band[name] for name in band_list]
+
+    else:
+        # For other bandpasses, get_bandpass will return the same object
+        # on each call, so just use it directly.
+        return [sncosmo.get_bandpass(name) for name in band_list]
+
+
+def _read_salt2(name_or_obj, read_covmat=False, expand_bands=False):
     """Read a new-style SALT2 file.
 
     Such a file has metadata on lines starting with '@' and column names
@@ -263,7 +282,12 @@ def _read_salt2(f, **kwargs):
     There is optionally a line containing '#end' before the start of data.
     """
 
-    meta = odict()
+    if isinstance(name_or_obj, six.string_types):
+        f = open(name_or_obj, 'r')
+    else:
+        f = name_or_obj
+
+    meta = OrderedDict()
     colnames = []
     cols = []
     readingdata = False
@@ -312,7 +336,25 @@ def _read_salt2(f, **kwargs):
         for col, item in zip(cols, items):
             col.append(_cast_str(item))
 
-    data = odict(zip(colnames, cols))
+    if isinstance(name_or_obj, six.string_types):
+        f.close()
+
+    # read covariance matrix file, if requested and present
+    if read_covmat and 'COVMAT' in meta:
+        fname = os.path.join(os.path.dirname(f.name), meta['COVMAT'])
+
+        # use skiprows=1 because first row has array dimensions
+        fluxcov = np.loadtxt(fname, skiprows=1)
+
+        # asethetics: capitalize 'Fluxcov' to match salt2 colnames
+        # such as 'Fluxerr'
+        colnames.append('Fluxcov')
+        cols.append(fluxcov)
+
+    data = OrderedDict(zip(colnames, cols))
+
+    if expand_bands:
+        data['Filter'] = _expand_bands(data['Filter'], meta)
 
     return meta, data
 
@@ -320,13 +362,11 @@ def _read_salt2(f, **kwargs):
 # -----------------------------------------------------------------------------
 # Reader: salt2-old
 
-def _read_salt2_old(dirname, **kwargs):
+def _read_salt2_old(dirname, filenames=None):
     """Read old-style SALT2 files from a directory.
 
     A file named 'lightfile' must exist in the directory.
     """
-
-    filenames = kwargs.get('filenames', None)
 
     # Get list of files in directory.
     if not (os.path.exists(dirname) and os.path.isdir(dirname)):
@@ -337,7 +377,7 @@ def _read_salt2_old(dirname, **kwargs):
     if 'lightfile' not in dirfilenames:
         raise IOError("no lightfile in directory: '{0}'".format(dirname))
     with open(os.path.join(dirname, 'lightfile'), 'r') as lightfile:
-        meta = odict()
+        meta = OrderedDict()
         for line in lightfile.readlines():
             line = line.strip()
             if len(line) == 0:
@@ -400,7 +440,7 @@ def _read_salt2_old(dirname, **kwargs):
 
 # -----------------------------------------------------------------------------
 # Reader: json
-def _read_json(f, **kwargs):
+def _read_json(f):
     t = json.load(f)
 
     # Encode data keys as ascii rather than UTF-8 so that they can be
@@ -433,6 +473,23 @@ def read_lc(file_or_dir, format='ascii', **kwargs):
     format : {'ascii', 'json', 'salt2', 'salt2-old'}, optional
         Format of file. Default is 'ascii'. 'salt2' is the new format available
         in snfit version >= 2.3.0.
+    read_covmat : bool, optional
+        **[salt2 only]** If True, and if a ``COVMAT`` keyword is present in
+        header, read the covariance matrix from the filename specified
+        by ``COVMAT`` (assumed to be in the same directory as the lightcurve
+        file) and include it as a column named ``Fluxcov`` in the returned
+        table. Default is False.
+
+        *New in version 1.5.0*
+
+    expand_bands : bool, optional
+        **[salt2 only]** If True, convert band names into equivalent Bandpass
+        objects. This is particularly useful for position-dependent
+        bandpasses: the position information is read from the header and used
+        when creating the bandpass objects.
+
+        *New in version 1.5.0*
+
     delim : str, optional
         **[ascii only]** Used to split entries on a line. Default is `None`.
         Extra whitespace is ignored.
@@ -657,8 +714,8 @@ def _write_snana(f, data, meta, **kwargs):
 def _write_json(f, data, meta, **kwargs):
 
     # Build a dictionary of pure-python objects
-    output = odict([('meta', meta),
-                    ('data', odict())])
+    output = OrderedDict([('meta', meta),
+                          ('data', OrderedDict())])
     for key in data.dtype.names:
         output['data'][key] = data[key].tolist()
     json.dump(output, f)
@@ -709,7 +766,7 @@ def write_lc(data, fname, format='ascii', **kwargs):
         meta = data.meta
         data = np.asarray(data)
     else:
-        meta = odict()
+        meta = OrderedDict()
         if not isinstance(data, np.ndarray):
             data = dict_to_array(data)
     with open(fname, 'w') as f:

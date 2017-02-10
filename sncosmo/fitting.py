@@ -1,16 +1,19 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 from __future__ import division, print_function
-from warnings import warn
+
 import copy
 import time
+import math
+from collections import OrderedDict
+import warnings
 
 import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline as Spline1d
-from astropy.utils import OrderedDict as odict
 from astropy.extern import six
 
-from .photdata import standardize_data, normalize_data
+from .photdata import photometric_data
 from .utils import Result, Interp1D, ppf
+from .bandpasses import get_bandpass
 
 __all__ = ['fit_lc', 'nest_lc', 'mcmc_lc', 'flatten_result', 'chisq']
 
@@ -19,27 +22,35 @@ class DataQualityError(Exception):
     pass
 
 
-def _chisq(data, model, modelcov):
-    """Like chisq but assumes data is already standardized.
+def generate_chisq(data, model, signature='iminuit', modelcov=False):
+    """Define and return a chisq function for use in optimization.
 
-    The purpose of having this as a separate function is for the benefit
-    of fitting functions that standardize data once and call chisq many
-    times. Such functions explicitly call standardize_data and then this
-    function.
-    """
+    This function pre-computes and saves the inverse covariance matrix,
+    making subsequent evaluations faster. The model covariance (if specified)
+    is fixed at the time the chisq function is generated."""
 
+    # precompute inverse covariance matrix
+    cov = np.diag(data.fluxerr**2) if data.fluxcov is None else data.fluxcov
     if modelcov:
-        mflux, mcov = model.bandfluxcov(data['band'], data['time'],
-                                        zp=data['zp'], zpsys=data['zpsys'])
-        diff = (data['flux'] - mflux)
-        totcov = mcov + np.diag(data['fluxerr']**2)
-        invtotcov = np.linalg.inv(totcov)
-        return np.dot(np.dot(diff[np.newaxis, :], invtotcov),
-                      diff[:, np.newaxis])[0, 0]
+        _, mcov = model.bandfluxcov(data.band, data.time,
+                                    zp=data.zp, zpsys=data.zpsys)
+        cov += mcov
+    invcov = np.linalg.inv(cov)
+
+    # iminuit expects each parameter to be a separate argument (including fixed
+    # parameters)
+    if signature == 'iminuit':
+        def chisq(*parameters):
+            model.parameters = parameters
+            model_flux = model.bandflux(data.band, data.time,
+                                        zp=data.zp, zpsys=data.zpsys)
+            diff = data.flux - model_flux
+            return np.dot(np.dot(diff, invcov), diff)
+
     else:
-        mflux = model.bandflux(data['band'], data['time'],
-                               zp=data['zp'], zpsys=data['zpsys'])
-        return np.sum(((data['flux'] - mflux) / data['fluxerr'])**2)
+        raise ValueError("unknown signature: {!r}".format(signature))
+
+    return chisq
 
 
 def chisq(data, model, modelcov=False):
@@ -61,8 +72,28 @@ def chisq(data, model, modelcov=False):
     -------
     chisq : float
     """
-    data = standardize_data(data)
-    return _chisq(data, model, modelcov=modelcov)
+    data = photometric_data(data)
+    data.sort_by_time()
+
+    if data.fluxcov is None and not modelcov:
+        mflux = model.bandflux(data.band, data.time,
+                               zp=data.zp, zpsys=data.zpsys)
+        return np.sum(((data.flux - mflux) / data.fluxerr)**2)
+
+    else:
+        # need to invert a covariance matrix
+        cov = (np.diag(data.fluxerr**2) if data.fluxcov is None
+               else data.fluxcov)
+        if modelcov:
+            mflux, mcov = model.bandfluxcov(data.band, data.time,
+                                            zp=data.zp, zpsys=data.zpsys)
+            cov += mcov
+        else:
+            mflux = model.bandflux(data.band, data.time,
+                                   zp=data.zp, zpsys=data.zpsys)
+        invcov = np.linalg.inv(cov)
+        diff = data.flux - mflux
+        return np.dot(np.dot(diff, invcov), diff)
 
 
 def flatten_result(res):
@@ -113,26 +144,36 @@ def flatten_result(res):
     return flat
 
 
-def cut_bands(data, model, z_bounds=None):
-
+def _mask_bands(data, model, z_bounds=None):
     if z_bounds is None:
-        valid = model.bandoverlap(data['band'])
+        return model.bandoverlap(data.band)
     else:
-        valid = model.bandoverlap(data['band'], z=z_bounds)
-        valid = np.all(valid, axis=1)
+        return np.all(model.bandoverlap(data.band, z=z_bounds), axis=1)
 
-    if not np.all(valid):
+
+def _warn_dropped_bands(data, mask):
+    """Warn that we are dropping some bands from the data:"""
+    drop_bands = [repr(b) for b in set(data.band[np.invert(mask)])]
+    warnings.warn("Dropping following bands from data: " +
+                  ", ".join(drop_bands) +
+                  "(out of model wavelength range)", RuntimeWarning)
+
+
+def cut_bands(data, model, z_bounds=None, warn=True):
+    mask = _mask_bands(data, model, z_bounds=z_bounds)
+
+    if not np.all(mask):
+
         # Fail if there are no overlapping bands whatsoever.
-        if not np.any(valid):
+        if not np.any(mask):
             raise RuntimeError('No bands in data overlap the model.')
 
-        # Otherwise, warn that we are dropping some bands from the data:
-        drop_bands = [repr(b) for b in set(data['band'][np.invert(valid)])]
-        warn("Dropping following bands from data: " + ", ".join(drop_bands) +
-             "(out of model wavelength range)", RuntimeWarning)
-        data = data[valid]
+        if warn:
+            _warn_dropped_bands(data, mask)
 
-    return data
+        data = data[mask]
+
+    return data, mask
 
 
 def t0_bounds(data, model):
@@ -140,47 +181,49 @@ def t0_bounds(data, model):
 
     The lower bound is such that the latest model time is equal to the
     earliest data time. The upper bound is such that the earliest
-    model time is equal to the latest data time.
+    model time is equal to the latest data time."""
 
-    Assumes the data has been standardized."""
-
-    return (model.get('t0') + np.min(data['time']) - model.maxtime(),
-            model.get('t0') + np.max(data['time']) - model.mintime())
+    return (model.get('t0') + np.min(data.time) - model.maxtime(),
+            model.get('t0') + np.max(data.time) - model.mintime())
 
 
 def guess_t0_and_amplitude(data, model, minsnr):
-    """Guess t0 and amplitude of the model based on the data.
+    """Guess t0 and amplitude of the model based on the data."""
 
-    Assumes the data has been standardized."""
+    # get data above the signal-to-noise ratio cut
+    significant_data = data[(data.flux / data.fluxerr) > minsnr]
+    if len(significant_data) == 0:
+        raise DataQualityError('No data points with S/N > {0}. Initial '
+                               'guessing failed.'.format(minsnr))
 
+    # grid on which to evaluate model light curve
     timegrid = np.linspace(model.mintime(), model.maxtime(),
                            int(model.maxtime() - model.mintime() + 1))
 
-    snr = data['flux'] / data['fluxerr']
-    significant_data = data[snr > minsnr]
-    modelflux = {}
-    dataflux = {}
-    datatime = {}
-    zp = data['zp'][0]  # Same for all entries in "standardized" data.
-    zpsys = data['zpsys'][0]  # Same for all entries in "standardized" data.
-    for band in set(data['band']):
-        mask = significant_data['band'] == band
-        if np.any(mask):
-            modelflux[band] = (
-                model.bandflux(band, timegrid, zp=zp, zpsys=zpsys) /
-                model.parameters[2])
-            dataflux[band] = significant_data['flux'][mask]
-            datatime[band] = significant_data['time'][mask]
+    # get data flux on a consistent scale in order to compare to model
+    # flux light curve.
+    norm_flux = significant_data.normalized_flux(zp=25., zpsys='ab')
 
-    if len(modelflux) == 0:
+    model_lc = {}
+    data_flux = {}
+    data_time = {}
+    for band in set(significant_data.band):
+        model_lc[band] = (
+            model.bandflux(band, timegrid, zp=25., zpsys='ab') /
+            model.parameters[2])
+        mask = significant_data.band == band
+        data_flux[band] = norm_flux[mask]
+        data_time[band] = significant_data.time[mask]
+
+    if len(model_lc) == 0:
         raise DataQualityError('No data points with S/N > {0}. Initial '
                                'guessing failed.'.format(minsnr))
 
     # find band with biggest ratio of maximum data flux to maximum model flux
     maxratio = float("-inf")
     maxband = None
-    for band in modelflux:
-        ratio = np.max(dataflux[band]) / np.max(modelflux[band])
+    for band in model_lc:
+        ratio = np.max(data_flux[band]) / np.max(model_lc[band])
         if ratio > maxratio:
             maxratio = ratio
             maxband = band
@@ -189,17 +232,50 @@ def guess_t0_and_amplitude(data, model, minsnr):
     amplitude = abs(maxratio)
 
     # time guess is time of max in the band with the biggest ratio
-    data_tmax = datatime[maxband][np.argmax(dataflux[maxband])]
-    model_tmax = timegrid[np.argmax(modelflux[maxband])]
+    data_tmax = data_time[maxband][np.argmax(data_flux[maxband])]
+    model_tmax = timegrid[np.argmax(model_lc[maxband])]
     t0 = model.get('t0') + data_tmax - model_tmax
 
     return t0, amplitude
 
 
+def _print_iminuit_params(names, kwargs):
+    """Verbose printing of parameters to pass to Minuit"""
+    for name in names:
+        print(name, kwargs[name], 'step=', kwargs['error_' + name],
+              end=" ")
+        if 'limit_' + name in kwargs:
+            print('bounds=', kwargs['limit_' + name], end=" ")
+        print()
+
+
+def _phase_and_wave_mask(data, t0, z, phase_range, wave_range):
+    """Return a mask for the data based on an allowed rest-frame phase and/or
+    wavelength range (given some t0 and z)."""
+    if phase_range is not None:
+        data_phase = (data.time - t0) / (1.0 + z)
+        phase_mask = ((data_phase > phase_range[0]) &
+                      (data_phase < phase_range[1]))
+
+    if wave_range is not None:
+        data_obswave = np.array([get_bandpass(b).wave_eff for b in data.band])
+        data_restwave = data_obswave / (1.0 + z)
+        wave_mask = ((data_restwave > wave_range[0]) &
+                     (data_restwave < wave_range[1]))
+
+    if phase_range:
+        if wave_range:
+            return phase_mask & wave_mask
+        return phase_mask
+    if wave_range:
+        return wave_mask
+    return None
+
+
 def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
            guess_amplitude=True, guess_t0=True, guess_z=True,
-           minsnr=5., modelcov=False, verbose=False, maxcall=10000,
-           **kwargs):
+           minsnr=5.0, modelcov=False, verbose=False, maxcall=10000,
+           phase_range=None, wave_range=None, warn=True):
     """Fit model parameters to data by minimizing chi^2.
 
     Ths function defines a chi^2 to minimize, makes initial guesses for
@@ -240,8 +316,28 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         Minimization method to use. Currently there is only one choice.
     modelcov : bool, optional
         Include model covariance when calculating chisq. Default is False.
+        If true, the fit is performed multiple times until convergence.
+    phase_range : (float, float), optional
+        If given, discard data outside this range of phases. Note that
+        **the definition of phase varies between models**: For example,
+        phase=0 refers to explosion time in some models and time of peak
+        B band flux in others.
+
+        *New in version 1.5.0*
+
+    wave_range : (float, float), optional
+        If given, discard data with bandpass effective wavelengths outside
+        this range.
+
+        *New in version 1.5.0*
+
     verbose : bool, optional
         Print messages during fitting.
+    warn : bool, optional
+        Issue a warning when dropping bands outside the wavelength range of
+        the model. Default is True.
+
+        *New in version 1.5.0*
 
     Returns
     -------
@@ -264,6 +360,12 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
           indicies correspond to order of ``vparam_names``.
         - ``errors``: OrderedDict of varied parameter uncertainties.
           Corresponds to square root of diagonal entries in covariance matrix.
+        - ``nfit``: number of times the fit was performed. Can be greater than
+          one when model covariance, phase range or wavelength range is used.
+          *New in version 1.5.0.*
+        - ``data_mask``: Boolean array the same length as data specifying
+          whether each observation was used in the final fit.
+          *New in version 1.5.0.*
 
     fitmodel : `~sncosmo.Model`
         A copy of the model with parameters set to best-fit values.
@@ -300,19 +402,28 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
     The `~sncosmo.flatten_result` function can be used to make the result
     a dictionary suitable for appending as rows of a table:
 
-    >>> from astropy.table import Table               # doctest: +SKIP
-    >>> table_rows = []                               # doctest: +SKIP
-    >>> for sn in sne:                                # doctest: +SKIP
-    ...     res, fitmodel = sncosmo.fit_lc(           # doctest: +SKIP
-    ...          sn, model, ['t0', 'x0', 'x1', 'c'])  # doctest: +SKIP
-    ...     table_rows.append(flatten_result(res))    # doctest: +SKIP
-    >>> t = Table(table_rows)                         # doctest: +SKIP
+    >>> from astropy.table import Table
+    >>> table_rows = []
+    >>> for sn in sne:
+    ...     res, fitmodel = sncosmo.fit_lc(
+    ...          sn, model, ['t0', 'x0', 'x1', 'c'])
+    ...     table_rows.append(flatten_result(res))
+    >>> t = Table(table_rows)
 
     """
 
-    # Standardize and normalize data.
-    data = standardize_data(data)
-    data = normalize_data(data)
+    # Standardize data
+    data = photometric_data(data)
+
+    # sort by time (some sources require this)
+    # We keep track of indicies that sort the array because we want to be
+    # able to report the indexes of the original data that were used in the
+    # fit.
+    if not np.all(np.ediff1d(data.time) >= 0.0):
+        sortidx = np.argsort(data.time)
+        data = data[sortidx]
+    else:
+        sortidx = None
 
     # Make a copy of the model so we can modify it with impunity.
     model = copy.copy(model)
@@ -342,14 +453,17 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
             raise ValueError('z out of range.')
 
     # Cut bands that are not allowed by the wavelength range of the model.
-    data = cut_bands(data, model, z_bounds=bounds.get('z', None))
+    fitdata, support_mask = cut_bands(data, model,
+                                      z_bounds=bounds.get('z', None),
+                                      warn=warn)
+    data_mask = support_mask  # Initially this is the complete mask on data.
 
     # Unique set of bands in data
-    bands = set(data['band'].tolist())
+    bands = set(fitdata.band.tolist())
 
     # Find t0 bounds to use, if not explicitly given
     if 't0' in vparam_names and 't0' not in bounds:
-        bounds['t0'] = t0_bounds(data, model)
+        bounds['t0'] = t0_bounds(fitdata, model)
 
     # Note that in the parameter guessing below, we assume that the source
     # amplitude is the 3rd parameter of the Model (1st parameter of the Source)
@@ -363,14 +477,14 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
     # Make guesses for t0 and amplitude.
     # (For now, we assume it is the 3rd parameter of the model.)
     if (guess_amplitude or guess_t0):
-        t0, amplitude = guess_t0_and_amplitude(data, model, minsnr)
+        t0, amplitude = guess_t0_and_amplitude(fitdata, model, minsnr)
         if guess_amplitude:
             model.parameters[2] = amplitude
         if guess_t0:
             model.set(t0=t0)
 
     # count degrees of freedom
-    ndof = len(data) - len(vparam_names)
+    ndof = len(fitdata) - len(vparam_names)
 
     if method == 'minuit':
         try:
@@ -378,12 +492,6 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         except ImportError:
             raise ValueError("Minimization method 'minuit' requires the "
                              "iminuit package")
-
-        # The iminuit minimizer expects the function signature to have an
-        # argument for each parameter.
-        def fitchisq(*parameters):
-            model.parameters = parameters
-            return _chisq(data, model, modelcov=modelcov)
 
         # Set up keyword arguments to pass to Minuit initializer.
         kwargs = {}
@@ -414,18 +522,97 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
 
         if verbose:
             print("Initial parameters:")
-            for name in vparam_names:
-                print(name, kwargs[name], 'step=', kwargs['error_' + name],
-                      end=" ")
-                if 'limit_' + name in kwargs:
-                    print('bounds=', kwargs['limit_' + name], end=" ")
-                print()
+            _print_iminuit_params(vparam_names, kwargs)
+            print()
+
+        # run once with no model covariance, regardless of whether
+        # modelcov=True
+        fitchisq = generate_chisq(fitdata, model, signature='iminuit',
+                                  modelcov=False)
 
         m = iminuit.Minuit(fitchisq, errordef=1.,
                            forced_parameters=model.param_names,
-                           print_level=(1 if verbose else 0),
+                           print_level=(1 if verbose >= 2 else 0),
                            throw_nan=True, **kwargs)
         d, l = m.migrad(ncall=maxcall)
+        if verbose:
+            print("{} function calls; {} dof.".format(d.nfcn, ndof))
+
+        # numpy array of best-fit values (including fixed parameters).
+        parameters = np.array([m.values[name] for name in model.param_names])
+        model.parameters = parameters  # set model parameters to best fit.
+
+        # Iterative Fitting
+
+        if phase_range or wave_range:
+            range_mask = _phase_and_wave_mask(data, model.get('t0'),
+                                              model.get('z'),
+                                              phase_range, wave_range)
+            data_mask = range_mask & support_mask
+
+        # if model covariance, we need to re-run iteratively until convergence
+        # if phase range is given, we need to rerun if there are any
+        # masked points.
+        refit = (d.is_valid and (modelcov or
+                                 ((phase_range or wave_range) and
+                                  np.any(data_mask != support_mask))))
+        nfit = 1
+        while refit:
+            # set new starting point to last point
+            for name in vparam_names:
+                kwargs[name] = model.get(name)
+
+            if verbose:
+                print("Initial parameters:")
+                _print_iminuit_params(vparam_names, kwargs)
+                print()
+
+            # re-crop data based on ranges, if necessary
+            if (phase_range or wave_range):
+                fitdata = data[data_mask]
+
+            ndof = len(fitdata) - len(vparam_names)
+
+            # generate chisq function based on new starting point
+            fitchisq = generate_chisq(fitdata, model, signature='iminuit',
+                                      modelcov=modelcov)
+
+            m = iminuit.Minuit(fitchisq, errordef=1.,
+                               forced_parameters=model.param_names,
+                               print_level=(1 if verbose >= 2 else 0),
+                               throw_nan=True, **kwargs)
+            d, l = m.migrad(ncall=maxcall)
+
+            if verbose:
+                print("{} function calls; {} dof.".format(d.nfcn, ndof))
+
+            parameters = np.array([m.values[name]
+                                   for name in model.param_names])
+            model.parameters = parameters
+            nfit += 1
+
+            refit = False
+            # only consider refitting if we got a valid answer and we're under
+            # the maximum number of iterations:
+            if d.is_valid and nfit < 22:
+                # recalculate data mask based on new t0, z
+                if phase_range or wave_range:
+                    old_data_mask = data_mask
+                    range_mask = _phase_and_wave_mask(data, model.get('t0'),
+                                                      model.get('z'),
+                                                      phase_range, wave_range)
+                    data_mask = support_mask & range_mask
+
+                    # we'll refit if we changed any data
+                    refit = np.any(data_mask != old_data_mask)
+
+                # refit if *any* parameter changed by more than 10% of
+                # statistical error bar
+                if modelcov:
+                    for name in vparam_names:
+                        frac_change = (abs(m.values[name] - kwargs[name]) /
+                                       m.errors[name])
+                        refit = refit or frac_change > 0.1
 
         # Build a message.
         message = []
@@ -447,10 +634,6 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
             message.append('Minimization exited successfully.')
         # iminuit: m.np_matrix() doesn't work
 
-        # numpy array of best-fit values (including fixed parameters).
-        parameters = np.array([m.values[name] for name in model.param_names])
-        model.parameters = parameters  # set model parameters to best fit.
-
         # Covariance matrix (only varied parameters) as numpy array.
         if m.covariance is None:
             covariance = None
@@ -463,7 +646,13 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         if m.errors is None:
             errors = None
         else:
-            errors = odict([(name, m.errors[name]) for name in vparam_names])
+            errors = OrderedDict((name, m.errors[name])
+                                 for name in vparam_names)
+
+        # If we need to, unsort the mask so mask applies to input data
+        if sortidx is not None:
+            unsort_idx = np.argsort(sortidx)  # indicies that will unsort array
+            data_mask = data_mask[unsort_idx]
 
         # Compile results
         res = Result(success=d.is_valid,
@@ -475,21 +664,21 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
                      parameters=parameters,
                      vparam_names=vparam_names,
                      covariance=covariance,
-                     errors=errors)
+                     errors=errors,
+                     nfit=nfit,
+                     data_mask=data_mask)
 
-        # TODO remove cov_names in a future release.
         depmsg = ("The `cov_names` attribute is deprecated in sncosmo v1.0 "
-                  "and will be removed in v1.1. Use `vparam_names` instead.")
+                  "and will be removed in v2.0. Use `vparam_names` instead.")
         res.__dict__['deprecated']['cov_names'] = (vparam_names, depmsg)
 
     else:
         raise ValueError("unknown method {0:r}".format(method))
 
-    # TODO remove this in a future release.
     if "flatten" in kwargs:
-        warn("The `flatten` keyword is deprecated in sncosmo v1.0 "
-             "and will be removed in v1.1. Use the flatten_result() "
-             "function instead.")
+        warnings.warn("The `flatten` keyword is deprecated in sncosmo v1.0 "
+                      "and will be removed in v2.0. Use the flatten_result() "
+                      "function instead.")
         if kwargs["flatten"]:
             res = flatten_result(res)
     return res, model
@@ -498,7 +687,7 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
 def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
             minsnr=5., priors=None, ppfs=None, npoints=100, method='single',
             maxiter=None, maxcall=None, modelcov=False, rstate=None,
-            verbose=False, **kwargs):
+            verbose=False, warn=True, **kwargs):
     """Run nested sampling algorithm to estimate model parameters and evidence.
 
     Parameters
@@ -547,6 +736,9 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
     maxiter : int, optional
         Maximum number of iterations. Iteration may stop earlier if
         termination condition is reached. Default is no limit.
+    maxcall : int, optional
+        Maximum number of likelihood evaluations. Iteration may stop earlier
+        if termination condition is reached. Default is no limit.
     modelcov : bool, optional
         Include model covariance when calculating chisq. Default is False.
     rstate : `~numpy.random.RandomState`, optional
@@ -554,6 +746,11 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
         ``numpy.random`` module will be used.
     verbose : bool, optional
         Print running evidence sum on a single line.
+    warn : bool, optional
+        Issue warning when dropping bands outside the model range. Default is
+        True.
+
+        *New in version 1.5.0*
 
     Returns
     -------
@@ -589,6 +786,9 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
           len(vparam_names)).
         * ``bounds``: Dictionary of bounds on varied parameters (including
           any automatically determined bounds).
+        * ``data_mask``: Boolean array the same length as data specifying
+          whether each observation was used.
+          *New in version 1.5.0.*
 
     estimated_model : `~sncosmo.Model`
         A copy of the model with parameters set to the values in
@@ -600,15 +800,24 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
     except ImportError:
         raise ImportError("nest_lc() requires the nestle package.")
 
+    # warnings
     if "nobj" in kwargs:
-        warn("The nobj keyword is deprecated and will be removed in a future "
-             "sncosmo release. Use `npoints` instead.")
+        warnings.warn("The nobj keyword is deprecated and will be removed in "
+                      "sncosmo v2.0. Use `npoints` instead.")
         npoints = kwargs.pop("nobj")
 
     # experimental parameters
     tied = kwargs.get("tied", None)
 
-    data = standardize_data(data)
+    data = photometric_data(data)
+
+    # sort by time
+    if not np.all(np.ediff1d(data.time) >= 0.0):
+        sortidx = np.argsort(data.time)
+        data = data[sortidx]
+    else:
+        sortidx = None
+
     model = copy.copy(model)
     bounds = copy.copy(bounds)  # need to copy this b/c we modify it below
 
@@ -616,7 +825,9 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
     vparam_names = [s for s in model.param_names if s in vparam_names]
 
     # Drop data that the model doesn't cover.
-    data = cut_bands(data, model, z_bounds=bounds.get('z', None))
+    fitdata, data_mask = cut_bands(data, model,
+                                   z_bounds=bounds.get('z', None),
+                                   warn=warn)
 
     if guess_amplitude_bound:
         if model.param_names[2] not in vparam_names:
@@ -632,12 +843,12 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
         # when doing the guess.
         if 'z' in bounds:
             model.set(z=sum(bounds['z']) / 2.)
-        _, amplitude = guess_t0_and_amplitude(data, model, minsnr)
+        _, amplitude = guess_t0_and_amplitude(fitdata, model, minsnr)
         bounds[model.param_names[2]] = (0., 10. * amplitude)
 
     # Find t0 bounds to use, if not explicitly given
     if 't0' in vparam_names and 't0' not in bounds:
-        bounds['t0'] = t0_bounds(data, model)
+        bounds['t0'] = t0_bounds(fitdata, model)
 
     if ppfs is None:
         ppfs = {}
@@ -697,7 +908,7 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
 
     def loglike(parameters):
         model.parameters[idx] = parameters
-        return -0.5 * _chisq(data, model, modelcov=modelcov)
+        return -0.5 * chisq(fitdata, model, modelcov=modelcov)
 
     t0 = time.time()
     res = nestle.sample(loglike, prior_transform, ndim, npdim=npdim,
@@ -712,6 +923,11 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
     # update model parameters to estimated ones.
     model.set(**dict(zip(vparam_names, vparameters)))
 
+    # If we need to, unsort the mask so mask applies to input data
+    if sortidx is not None:
+        unsort_idx = np.argsort(sortidx)  # indicies that will unsort array
+        data_mask = data_mask[unsort_idx]
+
     # `res` is a nestle.Result object. Collect result into a sncosmo.Result
     # object for consistency, and add more fields.
     res = Result(niter=res.niter,
@@ -724,22 +940,25 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
                  logvol=res.logvol,
                  logl=res.logl,
                  vparam_names=copy.copy(vparam_names),
-                 ndof=len(data) - len(vparam_names),
+                 ndof=len(fitdata) - len(vparam_names),
                  bounds=bounds,
                  time=elapsed,
                  parameters=model.parameters.copy(),
                  covariance=cov,
-                 errors=odict(zip(vparam_names, np.sqrt(np.diagonal(cov)))),
-                 param_dict=odict(zip(model.param_names, model.parameters)))
+                 errors=OrderedDict(zip(vparam_names,
+                                        np.sqrt(np.diagonal(cov)))),
+                 param_dict=OrderedDict(zip(model.param_names,
+                                            model.parameters)),
+                 data_mask=data_mask)
 
     # Deprecated result fields.
     depmsg = ("The `param_names` attribute is deprecated in sncosmo v1.0 "
-              "and will be removed in a future release. "
+              "and will be removed in sncosmo v2.0."
               "Use `vparam_names` instead.")
     res.__dict__['deprecated']['param_names'] = (res.vparam_names, depmsg)
 
     depmsg = ("The `logprior` attribute is deprecated in sncosmo v1.2 "
-              "and will be changed in a future release. "
+              "and will be changed in sncosmo v2.0."
               "Use `logvol` instead.")
     res.__dict__['deprecated']['logprior'] = (res.logvol, depmsg)
 
@@ -749,13 +968,14 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
 def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
             guess_amplitude=True, guess_t0=True, guess_z=True,
             minsnr=5., modelcov=False, nwalkers=10, nburn=200,
-            nsamples=1000, thin=1, a=2.0):
+            nsamples=1000, sampler='ensemble', ntemps=4, thin=1,
+            a=2.0, warn=True):
     """Run an MCMC chain to get model parameter samples.
 
-    This is a convenience function around `emcee.EnsembleSampler`.
-    It defines the likelihood function and makes a heuristic guess at a
-    good set of starting points for the walkers. It then runs the sampler,
-    starting with a burn-in run.
+    This is a convenience function around `emcee.EnsembleSampler` andx
+    `emcee.PTSampler`. It defines the likelihood function and makes a
+    heuristic guess at a good set of starting points for the
+    walkers. It then runs the sampler, starting with a burn-in run.
 
     If you're not getting good results, you might want to try
     increasing the burn-in, increasing the walkers, or specifying a
@@ -802,16 +1022,28 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
     modelcov : bool, optional
         Include model covariance when calculating chisq. Default is False.
     nwalkers : int, optional
-        Number of walkers in the EnsembleSampler
+        Number of walkers in the sampler.
     nburn : int, optional
         Number of samples in burn-in phase.
     nsamples : int, optional
         Number of samples in production run.
+    sampler: str, optional
+        The kind of sampler to use. Currently 'ensemble' for
+        `emcee.EnsembleSampler` and 'pt' for `emcee.PTSampler` are
+        supported.
+    ntemps : int, optional
+        If `sampler == 'pt'` the number of temperatures to use for the
+        parallel tempered sampler.
     thin : int, optional
         Factor by which to thin samples in production run. Output samples
         array will have (nsamples/thin) samples.
     a : float, optional
-        Proposal scale parameter passed to the EnsembleSampler.
+        Proposal scale parameter passed to the sampler.
+    warn : bool, optional
+        Issue a warning when dropping bands outside the wavelength range of
+        the model. Default is True.
+
+        *New in version 1.5.0*
 
     Returns
     -------
@@ -832,6 +1064,12 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
           matrix for varied parameters. Useful for ``plot_lc``.
         * ``mean_acceptance_fraction``: mean acceptance fraction for all
           walkers in the sampler.
+        * ``ndof``: Number of degrees of freedom (len(data) -
+          len(vparam_names)).
+          *New in version 1.5.0.*
+        * ``data_mask``: Boolean array the same length as data specifying
+          whether each observation was used.
+          *New in version 1.5.0.*
 
     est_model : `~sncosmo.Model`
         Copy of input model with varied parameters set to mean value in
@@ -845,8 +1083,14 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
         raise ImportError("mcmc_lc() requires the emcee package.")
 
     # Standardize and normalize data.
-    data = standardize_data(data)
-    data = normalize_data(data)
+    data = photometric_data(data)
+
+    # sort by time
+    if not np.all(np.ediff1d(data.time) >= 0.0):
+        sortidx = np.argsort(data.time)
+        data = data[sortidx]
+    else:
+        sortidx = None
 
     # Make a copy of the model so we can modify it with impunity.
     model = copy.copy(model)
@@ -878,11 +1122,13 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
             raise ValueError('z out of range.')
 
     # Cut bands that are not allowed by the wavelength range of the model.
-    data = cut_bands(data, model, z_bounds=bounds.get('z', None))
+    fitdata, data_mask = cut_bands(data, model,
+                                   z_bounds=bounds.get('z', None),
+                                   warn=warn)
 
     # Find t0 bounds to use, if not explicitly given
     if 't0' in vparam_names and 't0' not in bounds:
-        bounds['t0'] = t0_bounds(data, model)
+        bounds['t0'] = t0_bounds(fitdata, model)
 
     # Note that in the parameter guessing below, we assume that the source
     # amplitude is the 3rd parameter of the Model (1st parameter of the Source)
@@ -896,7 +1142,7 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
     # Make guesses for t0 and amplitude.
     # (we assume amplitude is the 3rd parameter of the model.)
     if guess_amplitude or guess_t0:
-        t0, amplitude = guess_t0_and_amplitude(data, model, minsnr)
+        t0, amplitude = guess_t0_and_amplitude(fitdata, model, minsnr)
         if guess_amplitude:
             model.parameters[2] = amplitude
         if guess_t0:
@@ -912,46 +1158,82 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
     idxpriors = [(vparam_names.index(k), priors[k]) for k in priors]
 
     # Posterior function.
-    def lnprob(parameters):
+    def lnlike(parameters):
         for i, low, high in idxbounds:
             if not low < parameters[i] < high:
                 return -np.inf
 
         model.parameters[modelidx] = parameters
-        logp = -0.5 * _chisq(data, model, modelcov=modelcov)
-
-        for i, func in idxpriors:
-            logp += math.log(func(parameters[i]))
-
+        logp = -0.5 * chisq(fitdata, model, modelcov=modelcov)
         return logp
 
-    # Heuristic determination of  walker initial positions:
-    # distribute walkers in a symmetric gaussian ball, with heuristically
+    def lnprior(parameters):
+        logp = 0
+        for i, func in idxpriors:
+            logp += math.log(func(parameters[i]))
+        return logp
+
+    def lnprob(parameters):
+        return lnprior(parameters) + lnlike(parameters)
+
+    # Heuristic determination of walker initial positions: distribute
+    # walkers uniformly over parameter space. If no bounds are
+    # supplied for a given parameter, use a heuristically determined
+    # scale.
+
+    if sampler == 'pt':
+        pos = np.empty((ndim, nwalkers, ntemps))
+        for i, name in enumerate(vparam_names):
+            if name in bounds:
+                pos[i] = np.random.uniform(low=bounds[name][0],
+                                           high=bounds[name][1],
+                                           size=(nwalkers, ntemps))
+            else:
+                ctr = model.get(name)
+                scale = np.abs(ctr)
+                pos[i] = np.random.uniform(low=ctr-scale, high=ctr+scale,
+                                           size=(nwalkers, ntemps))
+        pos = np.swapaxes(pos, 0, 2)
+        sampler = emcee.PTSampler(ntemps, nwalkers, ndim, lnlike, lnprob, a=a)
+
+    # Heuristic determination of walker initial positions: distribute
+    # walkers in a symmetric gaussian ball, with heuristically
     # determined scale.
-    ctr = model.parameters[modelidx]
-    scale = np.ones(ndim)
-    for i, name in enumerate(vparam_names):
-        if name in bounds:
-            scale[i] = 0.0001 * (bounds[name][1] - bounds[name][0])
-        elif model.get(name) != 0.:
-            scale[i] = 0.01 * model.get(name)
-        else:
-            scale[i] = 0.1
-    pos = ctr + scale * np.random.normal(size=(nwalkers, ndim))
+
+    elif sampler == 'ensemble':
+        ctr = model.parameters[modelidx]
+        scale = np.ones(ndim)
+        for i, name in enumerate(vparam_names):
+            if name in bounds:
+                scale[i] = 0.0001 * (bounds[name][1] - bounds[name][0])
+            elif model.get(name) != 0.:
+                scale[i] = 0.01 * model.get(name)
+            else:
+                scale[i] = 0.1
+        pos = ctr + scale * np.random.normal(size=(nwalkers, ndim))
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob, a=a)
+
+    else:
+        raise ValueError('Invalid sampler type. Currently "pt" '
+                         'and "ensemble" are supported.')
 
     # Run the sampler.
-    sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob, a=a)
     pos, prob, state = sampler.run_mcmc(pos, nburn)  # burn-in
     sampler.reset()
     sampler.run_mcmc(pos, nsamples, thin=thin)  # production run
-    samples = sampler.flatchain
+    samples = sampler.flatchain.reshape(-1, ndim)
 
     # Summary statistics.
     vparameters = np.mean(samples, axis=0)
     cov = np.cov(samples, rowvar=0)
     model.set(**dict(zip(vparam_names, vparameters)))
-    errors = odict(zip(vparam_names, np.sqrt(np.diagonal(cov))))
+    errors = OrderedDict(zip(vparam_names, np.sqrt(np.diagonal(cov))))
     mean_acceptance_fraction = np.mean(sampler.acceptance_fraction)
+
+    # If we need to, unsort the mask so mask applies to input data
+    if sortidx is not None:
+        unsort_idx = np.argsort(sortidx)  # indicies that will unsort array
+        data_mask = data_mask[unsort_idx]
 
     res = Result(param_names=copy.copy(model.param_names),
                  parameters=model.parameters.copy(),
@@ -959,6 +1241,8 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
                  samples=samples,
                  covariance=cov,
                  errors=errors,
-                 mean_acceptance_fraction=mean_acceptance_fraction)
+                 ndof=len(fitdata) - len(vparam_names),
+                 mean_acceptance_fraction=mean_acceptance_fraction,
+                 data_mask=data_mask)
 
     return res, model

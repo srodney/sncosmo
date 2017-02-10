@@ -24,7 +24,7 @@ else:
 builtins._ASTROPY_SETUP_ = True
 
 from astropy_helpers.setup_helpers import (
-    register_commands, adjust_compiler, get_debug_option, get_package_info)
+    register_commands, get_debug_option, get_package_info)
 from astropy_helpers.git_helpers import get_git_devstr
 from astropy_helpers.version_helpers import generate_version_py
 
@@ -52,7 +52,7 @@ URL = 'http://sncosmo.readthedocs.org'
 builtins._ASTROPY_PACKAGE_NAME_ = PACKAGENAME
 
 # VERSION should be PEP386 compatible (http://www.python.org/dev/peps/pep-0386)
-VERSION = '1.3.dev'
+VERSION = '1.5.dev'
 
 # Indicates if this version is a release version
 RELEASE = 'dev' not in VERSION
@@ -65,17 +65,9 @@ if not RELEASE:
 # modify distutils' behavior.
 cmdclassd = register_commands(PACKAGENAME, VERSION, RELEASE)
 
-# Adjust the compiler in case the default on this platform is to use a
-# broken one.
-adjust_compiler(PACKAGENAME)
-
 # Freeze build information in version.py
 generate_version_py(PACKAGENAME, VERSION, RELEASE,
                     get_debug_option(PACKAGENAME))
-
-# The current scripts in sncosmo are for developer use, not intended to
-# be installed.
-scripts = []
 
 # Get configuration information from all of the various subpackages.
 # See the docstring for setup_helpers.update_package_files for more
@@ -97,9 +89,10 @@ package_info['package_data'][PACKAGENAME] = data_files
 setup(name=PACKAGENAME,
       version=VERSION,
       description=DESCRIPTION,
-      scripts=scripts,
-      requires=['numpy', 'scipy', 'astropy'],
-      install_requires=['numpy', 'scipy', 'astropy'],
+      install_requires=['numpy>=1.5.0',
+                        'scipy>=0.9.0',
+                        'extinction>=0.2.2',
+                        'astropy>=0.4.0'],
       provides=[PACKAGENAME],
       author=AUTHOR,
       author_email=AUTHOR_EMAIL,
