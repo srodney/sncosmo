@@ -229,13 +229,13 @@ def get_evidence(sn=testsnIa, modelsource='salt2',
     """
     import os
     from scipy import interpolate, integrate
-    from . import fitting, Model, CCM89Dust
+    from . import _deprecated, fitting, Model, CCM89Dust
     import time
     tstart = time.time()
 
     # standardize the data column names and normalize to zpt=25 AB
-    sn = fitting.standardize_data( sn )
-    sn = fitting.normalize_data( sn )
+    #sn = _deprecated.standardize_data( sn )
+    #sn = _deprecated.normalize_data( sn )
 
     # Define parameter bounds and priors for z, x1, c, Rv, etc
     if zhost is None :

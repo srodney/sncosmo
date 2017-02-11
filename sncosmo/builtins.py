@@ -668,9 +668,8 @@ for name in ['sn1998bu_CfA', 'sn1999cl_CfA', 'sn1999cl_LCO', 'sn1999cl_LOSS',
              'sn2011df_CfA', 'sn2011ao_CfA', 'sn2011by_CfA',
              'snf20080514-002_LOSS', 'snf20080522-000_CfA']:
     relpath = 'data/models/lowzIa/' + name + '.dat'
-    registry.register_loader(Source, name,
-                             load_timeseries_ascii_local,
-                             args=[relpath, True], version='1.0', meta=meta)
+    _SOURCES.register_loader(name, load_timeseries_ascii_local,
+                             args=(relpath, True), version='1.0', meta=meta)
 
 # MLCS2k2
 def load_mlcs2k2(relpath, name=None, version=None):
