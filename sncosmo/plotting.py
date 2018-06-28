@@ -19,12 +19,29 @@ __all__ = ['plot_lc']
 _model_ls = ['-', '--', ':', '-.']
 
 
+def _add_errorbar(ax, x, y, yerr, filled, markersize=None, color=None):
+    """Add an errorbar to Axes `ax`, allowing an array of markers."""
+    ax.errorbar(x[filled], y[filled], yerr[filled], ls='None',
+                marker='o', markersize=markersize, color=color)
+    notfilled = ~filled
+    ax.errorbar(x[notfilled], y[notfilled], yerr[notfilled], ls='None',
+                mfc='None', marker='o', markersize=markersize, color=color)
+
+
+def _add_plot(ax, x, y, filled, markersize=None, color=None):
+        ax.plot(x[filled], y[filled], marker='o',
+                markersize=markersize, color=color, ls='None')
+        notfilled = ~filled
+        ax.plot(x[notfilled], y[notfilled], marker='o', mfc='None',
+                markersize=markersize, color=color, ls='None')
+
+
 def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
             pulls=True, xfigsize=None, yfigsize=None, figtext=None,
             model_label=None, errors=None, ncol=2, figtextsize=1.,
             show_model_params=True, tighten_ylim=False, color=None,
-            cmap=None, cmap_lims=(3000., 10000.), fname=None,
-            fill_percentiles=None, **kwargs):
+            cmap=None, cmap_lims=(3000., 10000.), fill_data_marker=None,
+            fname=None, fill_percentiles=None, **kwargs):
     """Plot light curve data or model light curves.
 
     Parameters
@@ -90,6 +107,9 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
         3000 Angstroms will be assigned a color at the low end of the colormap
         and a bandpass with a central wavelength of 10000 will be assigned a
         color at the high end of the colormap.
+    fill_data_marker : array_like, optional
+        Array of booleans indicating whether to plot a filled or unfilled
+        marker for each data point. Default is all filled markers.
     fname : str, optional
         Filename to pass to savefig. If None (default), figure is returned.
     fill_percentiles : (float, float, float), optional
@@ -190,8 +210,12 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
     # Standardize and normalize data.
     if data is not None:
         data = photometric_data(data)
-        data.sort_by_time()
         data = data.normalized(zp=zp, zpsys=zpsys)
+        if not np.all(np.ediff1d(data.time) >= 0.0):
+            sortidx = np.argsort(data.time)
+            data = data[sortidx]
+        else:
+            sortidx = None
 
     # Bands to plot
     if data is None:
@@ -200,6 +224,20 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
         bands = set(data.band)
     else:
         bands = set(data.band) & set(bands)
+
+    # ensure bands is a list of Bandpass objects
+    bands = [get_bandpass(b) for b in bands]
+
+    # filled: used only if data is not None. Guarantee array of booleans
+    if data is not None:
+        if fill_data_marker is None:
+            fill_data_marker = np.ones(data.time.shape, dtype=np.bool)
+        else:
+            fill_data_marker = np.asarray(fill_data_marker)
+            if fill_data_marker.shape != data.time.shape:
+                raise ValueError("fill_data_marker shape does not match data")
+        if sortidx is not None:  # sort like we sorted the data
+            fill_data_marker = fill_data_marker[sortidx]
 
     # Build figtext (including model parameters, if there is exactly 1 model).
     if errors is None:
@@ -287,8 +325,7 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
     tgrid = np.linspace(tmin, tmax, int(tmax - tmin) + 1)
 
     # Loop over bands
-    bands = list(bands)
-    waves = [get_bandpass(b).wave_eff for b in bands]
+    waves = [b.wave_eff for b in bands]
     waves_and_bands = sorted(zip(waves, bands))
     for axnum in range(ncol * nrow):
         row = axnum // ncol
@@ -316,8 +353,9 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
             time = data.time[mask]
             flux = data.flux[mask]
             fluxerr = data.fluxerr[mask]
-            ax.errorbar(time - toff, flux, fluxerr, ls='None',
-                        color=bandcolor, marker='.', markersize=3.)
+            bandfilled = fill_data_marker[mask]
+            _add_errorbar(ax, time - toff, flux, fluxerr, bandfilled,
+                          color=bandcolor, markersize=3.)
 
         # Plot model(s) if there are any.
         lines = []
@@ -362,7 +400,8 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
             bandname_ha = 'left'
 
         # Band name in corner
-        ax.text(bandname_coords[0], bandname_coords[1], band,
+        text = band.name if band.name is not None else str(band)
+        ax.text(bandname_coords[0], bandname_coords[1], text,
                 color='k', ha=bandname_ha, va='top', transform=ax.transAxes)
 
         ax.axhline(y=0., ls='--', c='k')  # horizontal line at flux = 0.
@@ -395,8 +434,8 @@ def plot_lc(data=None, model=None, bands=None, zp=25., zpsys='ab',
             fluxpulls = (flux - mflux) / fluxerr
             axpulls.axhspan(ymin=-1., ymax=1., color='0.95')
             axpulls.axhline(y=0., color=bandcolor)
-            axpulls.plot(time - toff, fluxpulls, marker='.',
-                         markersize=5., color=bandcolor, ls='None')
+            _add_plot(axpulls, time - toff, fluxpulls, bandfilled,
+                      markersize=4., color=bandcolor)
 
             # Ensure y range is centered at 0.
             ymin, ymax = axpulls.get_ylim()

@@ -120,6 +120,23 @@ for name, fname in [('bessellux', 'bessell/bessell_ux.dat'),
                                 args=('data/bandpasses/' + fname,),
                                 meta=bessell_meta)
 
+# Shifted bessell filters used in SNLS3 (in units of photon / photon)
+snls3_landolt_meta = {
+    'filterset': 'snls3-landolt',
+    'dataurl': 'http://supernovae.in2p3.fr/sdss_snls_jla/ReadMe.html',
+    'retrieved': '13 February 2017',
+    'description': 'Bessell bandpasses shifted as in JLA analysis',
+    'reference': ('B14a',
+                  '`Betoule et al. (2014) <http://adsabs.harvard.edu'
+                  '/abs/2014A%26A...568A..22B>`__, Footnote 21')}
+for name, fname in [
+        ('standard::u', 'bandpasses/snls3-landolt/sux-shifted.dat'),
+        ('standard::b', 'bandpasses/snls3-landolt/sb-shifted.dat'),
+        ('standard::v', 'bandpasses/snls3-landolt/sv-shifted.dat'),
+        ('standard::r', 'bandpasses/snls3-landolt/sr-shifted.dat'),
+        ('standard::i', 'bandpasses/snls3-landolt/si-shifted.dat')]:
+    _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
+                                args=(fname,), meta=snls3_landolt_meta)
 
 des_meta = {
     'filterset': 'des',
@@ -167,10 +184,16 @@ for name, fname in [('f435w', 'bandpasses/acs-wfc/wfc_F435W.dat'),
                     ('f606w', 'bandpasses/acs-wfc/wfc_F606W.dat'),
                     ('f625w', 'bandpasses/acs-wfc/wfc_F625W.dat'),
                     ('f775w', 'bandpasses/acs-wfc/wfc_F775W.dat'),
-                    ('f814w', 'bandpasses/acs-wfc/wfc_F814W.dat'),
+                    # TODO: 814 filter from STScI has multiple identical
+                    # wavelength values.
+                    # ('f814w', 'bandpasses/acs-wfc/wfc_F814W.dat'),
                     ('f850lp', 'bandpasses/acs-wfc/wfc_F850LP.dat')]:
     _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
                                 args=(fname,), meta=acs_meta)
+
+_BANDPASSES.alias('acswf::f606w', 'f606w')
+_BANDPASSES.alias('acswf::f775w', 'f775w')
+_BANDPASSES.alias('acswf::f850lp', 'f850lp')
 
 
 # HST NICMOS NIC2 bandpasses: remote
@@ -183,6 +206,9 @@ for name, fname in [
         ('nicf160w', 'bandpasses/nicmos-nic2/hst_nicmos_nic2_f160w.dat')]:
     _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
                                 args=(fname,), meta=nicmos_meta)
+
+_BANDPASSES.alias('nicmos2::f110w', 'nicf110w')
+_BANDPASSES.alias('nicmos2::f160w', 'nicf160w')
 
 
 # WFC3 IR bandpasses: remote
@@ -201,7 +227,7 @@ for name, fname in [('f098m', 'bandpasses/wfc3-ir/f098m.IR.tab'),
                     ('f153m', 'bandpasses/wfc3-ir/f153m.IR.tab'),
                     ('f160w', 'bandpasses/wfc3-ir/f160w.IR.tab')]:
         _BANDPASSES.register_loader(name, load_bandpass_remote_wfc3,
-                                    args=(fname,), meta=nicmos_meta)
+                                    args=(fname,), meta=wfc3ir_meta)
 
 
 wfc3uvis_meta = {'filterset': 'wfc3-uvis',
@@ -228,7 +254,7 @@ for name, fname in [('f218w', "bandpasses/wfc3-uvis/f218w.UVIS2.tab"),
                     ('uvf775w', "bandpasses/wfc3-uvis/f775w.UVIS2.tab"),
                     ('uvf814w', "bandpasses/wfc3-uvis/f814w.UVIS2.tab"),
                     ('uvf850lp', "bandpasses/wfc3-uvis/f850lp.UVIS2.tab")]:
-    _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
+    _BANDPASSES.register_loader(name, load_bandpass_remote_wfc3,
                                 args=(fname,), meta=wfc3uvis_meta)
 
 
@@ -269,6 +295,18 @@ for name, fname in [
     _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
                                 args=(fname,), meta=csp_meta)
 
+_BANDPASSES.alias('swope2::u', 'cspu')
+_BANDPASSES.alias('swope2::b', 'cspb')
+_BANDPASSES.alias('swope2::g', 'cspg')
+_BANDPASSES.alias('swope2::v', 'cspv3014')
+_BANDPASSES.alias('swope2::v1', 'cspv3009')
+_BANDPASSES.alias('swope2::v2', 'cspv9844')
+_BANDPASSES.alias('swope2::r', 'cspr')
+_BANDPASSES.alias('swope2::i', 'cspi')
+_BANDPASSES.alias('swope2::y', 'cspys')
+_BANDPASSES.alias('swope2::j', 'cspjs')
+_BANDPASSES.alias('swope2::h', 'csphs')
+
 
 jwst_nircam_meta = {'filterset': 'jwst-nircam',
                     'dataurl': 'http://www.stsci.edu/jwst/instruments/nircam'
@@ -300,29 +338,34 @@ for name, fname in [('f070w', 'bandpasses/nircam/jwst_nircam_f070w.dat'),
                                 args=(fname,), meta=jwst_nircam_meta)
 
 
-jwst_miri_meta = {'filterset': 'jwst-miri',
-                  'dataurl': 'http://www.stsci.edu/jwst/instruments/miri/'
-                             'instrumentdesign/filters',
-                  'retrieved': '09 Sep 2014',
-                  'description': 'James Webb Space Telescope MIRI '
-                                 'filters (idealized tophats)'}
-for name, ctr, width in [('f560w', 5.6, 1.2),
-                         ('f770w', 7.7, 2.2),
-                         ('f1000w', 10., 2.),
-                         ('f1130w', 11.3, 0.7),
-                         ('f1280w', 12.8, 2.4),
-                         ('f1500w', 15., 3.),
-                         ('f1800w', 18., 3.),
-                         ('f2100w', 21., 5.),
-                         ('f2550w', 25.5, 4.),
-                         ('f1065c', 10.65, 0.53),
+jwst_miri_meta = {
+    'filterset': 'jwst-miri',
+    'dataurl': ('http://ircamera.as.arizona.edu/MIRI/'
+                'ImPCE_TN-00072-ATC-Iss2.xlsx'),
+    'retrieved': '16 Feb 2017',
+    'description': 'James Webb Space Telescope MIRI filters'}
+for name in ['f560w', 'f770w', 'f1000w', 'f1130w', 'f1280w',
+             'f1500w', 'f1800w', 'f2100w', 'f2550w']:
+    fname = "bandpasses/miri/jwst_miri_{}.dat".format(name)
+    _BANDPASSES.register_loader(name, load_bandpass_remote_um,
+                                args=(fname,), meta=jwst_miri_meta)
+
+
+jwst_miri_meta2 = {'filterset': 'jwst-miri-tophat',
+                   'dataurl': ('http://www.stsci.edu/jwst/instruments/miri/'
+                               'instrumentdesign/filters'),
+                   'retrieved': '09 Sep 2014',
+                   'description': ('James Webb Space Telescope MIRI '
+                                   'filters (idealized tophat)')}
+for name, ctr, width in [('f1065c', 10.65, 0.53),
                          ('f1140c', 11.4, 0.57),
                          ('f1550c', 15.5, 0.78),
                          ('f2300c', 23., 4.6)]:
     _BANDPASSES.register_loader(name, tophat_bandpass_um,
-                                args=(ctr, width), meta=jwst_miri_meta)
+                                args=(ctr, width), meta=jwst_miri_meta2)
 
 
+# LSST bandpasses
 lsst_meta = {'filterset': 'lsst',
              'dataurl': ('https://github.com/lsst/throughputs/tree/'
                          '7632edaa9e93d06576e34a065ea4622de8cc48d0/baseline'),
@@ -334,18 +377,48 @@ for letter in ['u', 'g', 'r', 'i', 'z', 'y']:
     _BANDPASSES.register_loader(name, load_bandpass_remote_nm,
                                 args=(relpath,), meta=lsst_meta)
 
+# Keplercam
+keplercam_meta = {
+    'filterset': 'keplercam',
+    'dataurl': 'http://supernovae.in2p3.fr/sdss_snls_jla/ReadMe.html',
+    'retrieved': '13 Feb 2017',
+    'description': 'Keplercam transmissions as used in JLA'}
+for name, fname in [('keplercam::us', 'bandpasses/keplercam/Us_Keplercam.txt'),
+                    ('keplercam::b', 'bandpasses/keplercam/B_Keplercam.txt'),
+                    ('keplercam::v', 'bandpasses/keplercam/V_Keplercam.txt'),
+                    ('keplercam::r', 'bandpasses/keplercam/r_Keplercam.txt'),
+                    ('keplercam::i', 'bandpasses/keplercam/i_Keplercam.txt')]:
+        _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
+                                    args=(fname,), meta=keplercam_meta)
 
+# 4shooter
+fourshooter_meta = {
+    'filterset': '4shooter2',
+    'dataurl': 'http://supernovae.in2p3.fr/sdss_snls_jla/ReadMe.html',
+    'retrieved': '13 Feb 2017',
+    'description': '4Shooter filters as used in JLA'}
+for name, fname in [('4shooter2::us', 'bandpasses/4shooter2/Us_4Shooter2.txt'),
+                    ('4shooter2::b', 'bandpasses/4shooter2/B_4Shooter2.txt'),
+                    ('4shooter2::v', 'bandpasses/4shooter2/V_4Shooter2.txt'),
+                    ('4shooter2::r', 'bandpasses/4shooter2/R_4Shooter2.txt'),
+                    ('4shooter2::i', 'bandpasses/4shooter2/I_4Shooter2.txt')]:
+        _BANDPASSES.register_loader(name, load_bandpass_remote_aa,
+                                    args=(fname,), meta=fourshooter_meta)
 # =============================================================================
 # bandpass interpolators
+
+megacam_meta = {'filterset': 'megacampsf'}
 
 
 def load_megacampsf(letter, name=None):
     abspath = DATADIR.abspath('bandpasses/megacampsf', isdir=True)
     return snfitio.read_snfit_bandpass_interpolator(abspath, letter, name=name)
 
+
 for letter in ('u', 'g', 'r', 'i', 'z', 'y'):
     _BANDPASS_INTERPOLATORS.register_loader('megacampsf::' + letter,
-                                            load_megacampsf, args=(letter,))
+                                            load_megacampsf, args=(letter,),
+                                            meta=megacam_meta)
 
 # =============================================================================
 # Sources
@@ -510,8 +583,8 @@ _SOURCES.register_loader('hsiao-subsampled',
 website = 'http://supernovae.in2p3.fr/salt/doku.php?id=salt_templates'
 g10ref = ('G10', 'Guy et al. 2010 '
           '<http://adsabs.harvard.edu/abs/2010A%26A...523A...7G>')
-b14ref = ('B14', 'Betoule et al. 2014 '
-          '<http://arxiv.org/abs/1401.4064>')
+b14ref = ('B14b', 'Betoule et al. 2014 '
+          '<http://adsabs.harvard.edu/abs/2014A%26A...568A..22B>')
 for topdir, ver, ref in [('salt2-2-0', '2.0', g10ref),
                          ('salt2-4', '2.4', b14ref)]:
     meta = {'type': 'SN Ia', 'subclass': '`~sncosmo.SALT2Source`',
@@ -528,6 +601,18 @@ meta = {'type': 'SN Ia',
 _SOURCES.register_loader('salt2-extended', load_salt2model,
                          args=('models/snana/salt2_extended',), version='1.0',
                          meta=meta)
+
+# SALT2 H17
+meta = {'type': 'SN Ia',
+        'subclass': '`~sncosmo.SALT2Source`',
+        'url': 'http://snana.uchicago.edu/',
+        'note': "extracted from SNANA's SNDATA_ROOT on 24 April 2018. SALT2"
+        " model with wide wavelength range, Hounsell et al. 2017",
+        'reference': ('H17', 'Hounsell et al. 2017 '
+                      '<http://adsabs.harvard.edu/abs/2017arXiv170201747H>')}
+_SOURCES.register_loader('salt2-h17', load_salt2model,
+                         args=('models/snana/salt2-h17',),
+                         version='1.0', meta=meta)
 
 # 2011fe
 meta = {'type': 'SN Ia',
@@ -707,32 +792,90 @@ def load_spectral_magsys_fits(relpath, name=None):
     return SpectralMagSystem(refspectrum, name=name)
 
 
-def load_csp(**kwargs):
+def load_csp(name=None):
+    # Values transcribed from
+    # http://csp.obs.carnegiescience.edu/data/filters
+    # on 13 April 2017
+    return CompositeMagSystem(bands={'cspu': ('bd17', 10.519),
+                                     'cspg': ('bd17', 9.644),
+                                     'cspr': ('bd17', 9.352),
+                                     'cspi': ('bd17', 9.250),
+                                     'cspb': ('vega', 0.030),
+                                     'cspv3014': ('vega', 0.0096),
+                                     'cspv3009': ('vega', 0.0096),
+                                     'cspv9844': ('vega', 0.0096),
+                                     'cspys': ('vega', 0.),
+                                     'cspjs': ('vega', 0.),
+                                     'csphs': ('vega', 0.),
+                                     'cspk': ('vega', 0.),
+                                     'cspyd': ('vega', 0.),
+                                     'cspjd': ('vega', 0.),
+                                     'csphd': ('vega', 0.)},
+                              name=name)
 
-    # this file contains the csp zeropoints and standards
-    fname = get_pkg_data_filename('data/bandpasses/csp/csp_filter_info.dat')
-    data = np.genfromtxt(fname, names=True, dtype=None, skip_header=3)
-    bands = data['name']
-    refsystems = data['reference_sed']
-    offsets = data['natural_mag']
 
-    # In Python 3, convert to native strings (Unicode)
-    if six.PY3:
-        bands = np.char.decode(bands)
-        refsystems = np.char.decode(refsystems)
-
-    return CompositeMagSystem(bands, refsystems, offsets, name='csp')
-
-
-def load_ab_b12(**kwargs):
+def load_ab_b12(name=None):
     # offsets are in the sense (mag_SDSS - mag_AB) = offset
     # -> for example: a source with AB mag = 0. will have SDSS mag = 0.06791
-    bands = ['sdssu', 'sdssg', 'sdssr', 'sdssi', 'sdssz',
-             'sdss::u', 'sdss::g', 'sdss::r', 'sdss::i', 'sdss::z']
-    standards = 10 * ['ab']
-    offsets = 2 * [0.06791, -0.02028, -0.00493, -0.01780, -0.01015]
-    return CompositeMagSystem(bands, standards, offsets)
+    bands = {'sdssu': ('ab', 0.06791),
+             'sdssg': ('ab', -0.02028),
+             'sdssr': ('ab', -0.00493),
+             'sdssi': ('ab', -0.01780),
+             'sdssz': ('ab', -0.01015)}
 
+    # add aliases for above
+    for letter in 'ugriz':
+        bands['sdss::' + letter] = bands['sdss' + letter]
+
+    families = {'megacampsf::u': ('ab', 0.0),
+                'megacampsf::g': ('ab', 0.0),
+                'megacampsf::r': ('ab', 0.0),
+                'megacampsf::i': ('ab', 0.0),
+                'megacampsf::z': ('ab', 0.0),
+                'megacampsf::y': ('ab', 0.0)}
+
+    return CompositeMagSystem(bands=bands, families=families, name=name)
+
+
+def load_jla1(name=None):
+    """JLA1 magnitude system based on BD+17 STIS v003 spectrum"""
+
+    base = load_spectral_magsys_fits("spectra/bd_17d4708_stisnic_003.fits")
+    bands = {'standard::u': (base, 9.724),
+             'standard::b': (base, 9.907),
+             'standard::v': (base, 9.464),
+             'standard::r': (base, 9.166),
+             'standard::i': (base, 8.846),
+             'keplercam::us': (base, 9.724),
+             'keplercam::b': (base, 9.8803),
+             'keplercam::v': (base, 9.4722),
+             'keplercam::r': (base, 9.3523),
+             'keplercam::i': (base, 9.2542),
+             '4shooter2::us': (base, 9.724),
+             '4shooter2::b': (base, 9.8744),
+             '4shooter2::v': (base, 9.4789),
+             '4shooter2::r': (base, 9.1554),
+             '4shooter2::i': (base, 8.8506),
+             'swope2::u': (base, 10.514),
+             'swope2::g': (base, 9.64406),
+             'swope2::r': (base, 9.3516),
+             'swope2::i': (base, 9.25),
+             'swope2::b': (base, 9.876433),
+             'swope2::v': (base, 9.476626),
+             'swope2::v1': (base, 9.471276),
+             'swope2::v2': (base, 9.477482)}
+
+    return CompositeMagSystem(bands=bands, name=name)
+
+
+_MAGSYSTEMS.register_loader(
+    'jla1', load_jla1,
+    meta={'subclass': '`~sncosmo.CompositeMagSystem`',
+          'url': 'http://supernovae.in2p3.fr/sdss_snls_jla/ReadMe.html',
+          'description': ('JLA1 magnitude system based on BD+17 '
+                          'STIS v003 spectrum')})
+
+_MAGSYSTEMS.alias('vega2', 'jla1')
 
 # AB
 _MAGSYSTEMS.register_loader(
@@ -768,3 +911,4 @@ _MAGSYSTEMS.register_loader(
           'description': 'Betoule et al (2012) calibration of SDSS system.'})
 
 _MAGSYSTEMS.alias('ab_b12', 'ab-b12')
+_MAGSYSTEMS.alias('vegahst', 'vega')

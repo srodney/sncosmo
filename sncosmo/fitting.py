@@ -11,7 +11,7 @@ import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline as Spline1d
 from astropy.extern import six
 
-from .photdata import photometric_data
+from .photdata import photometric_data, select_data
 from .utils import Result, Interp1D, ppf
 from .bandpasses import get_bandpass
 
@@ -34,8 +34,8 @@ def generate_chisq(data, model, signature='iminuit', modelcov=False):
     if modelcov:
         _, mcov = model.bandfluxcov(data.band, data.time,
                                     zp=data.zp, zpsys=data.zpsys)
-        cov += mcov
-    invcov = np.linalg.inv(cov)
+        cov = cov + mcov
+    invcov = np.linalg.pinv(cov)
 
     # iminuit expects each parameter to be a separate argument (including fixed
     # parameters)
@@ -87,11 +87,11 @@ def chisq(data, model, modelcov=False):
         if modelcov:
             mflux, mcov = model.bandfluxcov(data.band, data.time,
                                             zp=data.zp, zpsys=data.zpsys)
-            cov += mcov
+            cov = cov + mcov
         else:
             mflux = model.bandflux(data.band, data.time,
                                    zp=data.zp, zpsys=data.zpsys)
-        invcov = np.linalg.inv(cov)
+        invcov = np.linalg.pinv(cov)
         diff = data.flux - mflux
         return np.dot(np.dot(diff, invcov), diff)
 
@@ -153,7 +153,8 @@ def _mask_bands(data, model, z_bounds=None):
 
 def _warn_dropped_bands(data, mask):
     """Warn that we are dropping some bands from the data:"""
-    drop_bands = [repr(b) for b in set(data.band[np.invert(mask)])]
+    drop_bands = [(b.name if b.name is not None else repr(b))
+                  for b in set(data.band[np.invert(mask)])]
     warnings.warn("Dropping following bands from data: " +
                   ", ".join(drop_bands) +
                   "(out of model wavelength range)", RuntimeWarning)
@@ -258,7 +259,7 @@ def _phase_and_wave_mask(data, t0, z, phase_range, wave_range):
                       (data_phase < phase_range[1]))
 
     if wave_range is not None:
-        data_obswave = np.array([get_bandpass(b).wave_eff for b in data.band])
+        data_obswave = np.array([b.wave_eff for b in data.band])
         data_restwave = data_obswave / (1.0 + z)
         wave_mask = ((data_restwave > wave_range[0]) &
                      (data_restwave < wave_range[1]))
@@ -529,6 +530,7 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         # modelcov=True
         fitchisq = generate_chisq(fitdata, model, signature='iminuit',
                                   modelcov=False)
+        ndof = len(fitdata) - len(vparam_names)
 
         m = iminuit.Minuit(fitchisq, errordef=1.,
                            forced_parameters=model.param_names,
@@ -553,9 +555,8 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         # if model covariance, we need to re-run iteratively until convergence
         # if phase range is given, we need to rerun if there are any
         # masked points.
-        refit = (d.is_valid and (modelcov or
-                                 ((phase_range or wave_range) and
-                                  np.any(data_mask != support_mask))))
+        refit = (modelcov or ((phase_range or wave_range) and
+                              np.any(data_mask != support_mask)))
         nfit = 1
         while refit:
             # set new starting point to last point

@@ -61,3 +61,6 @@ misc/test-salt2model
 
 # apple desktop services store
 .DS_Store
+
+# from testing?
+.cache

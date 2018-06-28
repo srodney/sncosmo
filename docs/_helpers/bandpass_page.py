@@ -3,14 +3,16 @@ and save it to this module's docstring for the purpose of including in
 sphinx documentation via the automodule directive."""
 
 from astropy.extern import six
-from sncosmo.bandpasses import _BANDPASSES
+from sncosmo.bandpasses import _BANDPASSES, _BANDPASS_INTERPOLATORS
+
+__all__ = []  # so that bandpass_table is not documented.
 
 # string.ascii_letters in py3
 ASCII_LETTERS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 bandpass_meta = _BANDPASSES.get_loaders_metadata()
-table_delim = "  ".join([11 * '=', 80 * '=', 14 * '=', 8 * '=', 12 * '='])
-table_colnames = ("{0:11}  {1:80}  {2:14}  {3:8}  {4:12}"
+table_delim = "  ".join([15 * '=', 80 * '=', 14 * '=', 8 * '=', 12 * '='])
+table_colnames = ("{0:15}  {1:80}  {2:14}  {3:8}  {4:12}"
                   .format('Name', 'Description', 'Reference', 'Data URL',
                           'Retrieved'))
 urlnums = {}
@@ -49,7 +51,7 @@ def bandpass_table(setname):
         if 'retrieved' in m:
             retrieved = m['retrieved']
 
-        lines.append("{0!r:11}  {1:80}  {2:14}  {3:8}  {4:12}".format(
+        lines.append("{0!r:15}  {1:80}  {2:14}  {3:8}  {4:12}".format(
             m['name'], m['description'], reflink, urllink, retrieved))
 
     lines.append(table_delim)
@@ -84,6 +86,25 @@ for setname in setnames:
    from bandpass_plot import plot_bandpass_set
    plot_bandpass_set({0!r})
 """.format(setname))
+
+# Bandpass interpolators
+bandpass_interpolator_meta = _BANDPASS_INTERPOLATORS.get_loaders_metadata()
+setnames = {m['filterset'] for m in bandpass_interpolator_meta}
+for setname in setnames:
+    names = [m['name'] for m in bandpass_interpolator_meta
+             if m['filterset'] == setname]
+    lines.append("")
+    lines.append(setname)
+    lines.append(len(setname) * "-")
+    lines.append("")
+    lines.append("These are radially-variable bandpasses. To get a Bandpass at a given radius, use ``band = sncosmo.get_bandpass('megacampsf::g', 13.0)``")
+    lines.append("")
+    lines.append("""
+.. plot::
+
+   from bandpass_plot import plot_bandpass_interpolators
+   plot_bandpass_interpolators({0!r})
+""".format(names))
 
 # URL links accumulated from all the tables.
 for url, urlnum in urlnums.items():

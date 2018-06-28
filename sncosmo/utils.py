@@ -220,12 +220,12 @@ def _download_file(remote_url, target):
 
     from contextlib import closing
     from astropy.extern.six.moves.urllib.request import urlopen, Request
-    from astropy.extern.six.moves.urllib.error import URLError
+    from astropy.extern.six.moves.urllib.error import URLError, HTTPError
     from astropy.utils.console import ProgressBarOrSpinner
-    from astropy.utils.data import conf
+    from . import conf
 
     timeout = conf.remote_timeout
-
+    download_block_size = 32768
     try:
         # Pretend to be a web browser (IE 6.0). Some servers that we download
         # from forbid access from programs.
@@ -247,14 +247,17 @@ def _download_file(remote_url, target):
             dlmsg = "Downloading {0}".format(remote_url)
             with ProgressBarOrSpinner(size, dlmsg) as p:
                 bytes_read = 0
-                block = remote.read(conf.download_block_size)
+                block = remote.read(download_block_size)
                 while block:
                     target.write(block)
                     bytes_read += len(block)
                     p.update(bytes_read)
-                    block = remote.read(conf.download_block_size)
+                    block = remote.read(download_block_size)
 
-    # Append a more informative error message to URLErrors.
+    # Append a more informative error message to HTTPErrors, URLErrors.
+    except HTTPError as e:
+        e.msg = "{}. requested URL: {!r}".format(e.msg, remote_url)
+        raise
     except URLError as e:
         append_msg = (hasattr(e, 'reason') and hasattr(e.reason, 'errno') and
                       e.reason.errno == 8)
@@ -270,6 +273,8 @@ def _download_file(remote_url, target):
     # way, but for some reason in mysterious circumstances it doesn't. So
     # we'll just re-raise it here instead.
     except socket.timeout as e:
+        # add the requested URL to the message (normally just 'timed out')
+        e.args = ('requested URL {!r} timed out'.format(remote_url),)
         raise URLError(e)
 
 
@@ -291,6 +296,8 @@ def download_file(remote_url, local_name):
         Whenever there's a problem getting the remote file.
     """
 
+    from astropy.extern.six.moves.urllib.error import HTTPError, URLError
+
     # ensure target directory exists
     dn = os.path.dirname(local_name)
     if not os.path.exists(dn):
@@ -310,8 +317,14 @@ def download_file(remote_url, local_name):
         f.close()
 
     else:
-        with open(local_name, 'wb') as target:
-            _download_file(remote_url, target)
+        try:
+            with open(local_name, 'wb') as target:
+                _download_file(remote_url, target)
+        except:
+            # in case of error downloading, remove file.
+            if os.path.exists(local_name):
+                os.remove(local_name)
+            raise
 
 
 def download_dir(remote_url, dirname):
@@ -533,5 +546,5 @@ def warn_once(name, depver, rmver, extra=None):
                "and will be removed in sncosmo {}".format(name, depver, rmver))
         if extra is not None:
             msg += " " + extra
-        warnings.warn(msg)
+        warnings.warn(msg, stacklevel=2)
         warned.append(name)

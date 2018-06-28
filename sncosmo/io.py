@@ -271,7 +271,7 @@ def _expand_bands(band_list, meta):
     else:
         # For other bandpasses, get_bandpass will return the same object
         # on each call, so just use it directly.
-        return [sncosmo.get_bandpass(name) for name in band_list]
+        return [get_bandpass(name) for name in band_list]
 
 
 def _read_salt2(name_or_obj, read_covmat=False, expand_bands=False):
@@ -485,8 +485,8 @@ def read_lc(file_or_dir, format='ascii', **kwargs):
     expand_bands : bool, optional
         **[salt2 only]** If True, convert band names into equivalent Bandpass
         objects. This is particularly useful for position-dependent
-        bandpasses: the position information is read from the header and used
-        when creating the bandpass objects.
+        bandpasses in the salt2 file format: the position information is
+        read from the header and used when creating the bandpass objects.
 
         *New in version 1.5.0*
 
