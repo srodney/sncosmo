@@ -13,7 +13,7 @@ import itertools
 import numpy as np
 from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                RectBivariateSpline as Spline2d,
-                               splmake, spleval, interp1d)
+                               splmake, spleval, interp1d, interp2d)
 from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
 from astropy.extern import six
@@ -30,7 +30,7 @@ from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
            'SALT2Source', 'MLCS2k2Source', 'Model',
            'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust',
-           'RandomSplineMicrolensing']
+           'AchromaticSplineMicrolensing', 'ChromaticSplineMicrolensing']
 
 _SOURCES = Registry()
 
@@ -1624,7 +1624,7 @@ class PropagationEffect(_ModelBase):
         return dedent(summary)
 
 
-class RandomSplineMicrolensing(PropagationEffect):
+class AchromaticSplineMicrolensing(PropagationEffect):
     """Average of randomly anchored splines, to mimic microlensing.
     We create a mock microlensing difference curve, giving the change in 
     magnitude as a function of time (no variation with wavelength). 
@@ -1637,11 +1637,10 @@ class RandomSplineMicrolensing(PropagationEffect):
     approximation for achromatic SN microlensing, but it is not actually 
     derived from a real lensing simulation.
     """
-    _param_names = [] # 'nanchor', 'sigmadm', 'nspl']
-    param_names_latex = [] # r'N$_{\rm anchor}$', r'sigma$_{\Delta \rm{M}}$',
-                         # r'N$_{\rm spl}$']
-    _minwave = 0.   # angstroms
-    _maxwave = 10.**6 # angstroms
+    _param_names = []
+    param_names_latex = []
+    _minwave = 0.
+    _maxwave = 10.**6
 
     def __init__(self, nanchor=10, sigmadm=2.0, nspl=10):
         # self._parameters = np.array([nanchor, sigmadm, nspl])
@@ -1670,6 +1669,73 @@ class RandomSplineMicrolensing(PropagationEffect):
         # magnify the flux
         deltamag = np.expand_dims(self._deltamag(phasefraction), 1)
         return flux * 10**(-0.4 * deltamag)
+
+
+class ChromaticSplineMicrolensing(PropagationEffect):
+    """Average of randomly anchored splines, to mimic microlensing.
+    We create a mock microlensing difference curve as is done for 
+    AchromaticSplineMicrolensing, giving the change in 
+    magnitude as a function of time. Then we add variation with wavelength 
+    by adding a two-dimensional polynomial to the delta mag surface. 
+
+    Caveat emptor: this is just a crude hack. It looks like a reasonable 
+    approximation for SN microlensing including wavelength variation, but it 
+    is not actually derived from a real lensing simulation.
+
+    Note that the "microlensing" this produces does not have any range of 
+    SN phase in which the microlensing is achromatic. 
+    """
+    _param_names = []
+    param_names_latex = []
+    _minwave = 200.   # Angstroms
+    _maxwave = 25000. # Angstroms
+
+    def __init__(self, nanchor=100, sigmadm=2.0, nspl=100):
+        # self._parameters = np.array([nanchor, sigmadm, nspl])
+        self._parameters = np.array([])
+        self._nanchor = nanchor
+        self._nspl = nspl
+        self._sigmadm = sigmadm
+
+        nsteps = 100
+        tarray = np.linspace(0., 1., nsteps)
+        wavearray = np.linspace(0., 1., nsteps)
+        time_anchors = np.linspace(0., 1., nanchor)
+        wave_anchors = np.linspace(0., 1., nanchor)
+
+        # First surface: make a 1d delta-mag curve that is the mean of a
+        # set of random splines in the time dimension, then extend it
+        # without variation into the wavelength dimension.
+        splfitarray = []
+        for i in range(nspl):
+            deltam_anchors = np.random.normal(
+                0, sigmadm, len(time_anchors))
+            spl1d = Spline1d(time_anchors, deltam_anchors)
+            splfitarray.append(spl1d(tarray))
+        splmean = np.mean(np.array(splfitarray), 0)
+        splmean_surface = np.tile(splmean, nsteps).reshape((nsteps, nsteps))
+
+        # Second surface: a 2-D polynomial grid across time and wavelength,
+        # defined with a random covariance matrix:
+        # each component in the cov matrix is drawn from a normal dist. with
+        # sigma = 1/4th of sigmadeltam.
+        # WARNING: right now this setup is basically totally unsupported
+        # by actual microlensing simulations.
+        cov = np.random.normal(0, sigmadm / 4., 4).reshape(2, 2)
+        polygrid_surface = np.polynomial.polynomial.polygrid2d(
+            tarray, wavearray, cov)
+
+        deltam_surface = splmean_surface + polygrid_surface
+        self._deltamag = interp2d(wavearray, tarray, deltam_surface)
+
+
+    def propagate(self, wave, flux, phasefraction=0):
+        """Propagate the magnification onto the model's flux output."""
+        # magnify the flux
+        wavefraction = (wave-self._minwave)/(self._maxwave-self._minwave)
+        deltamag = self._deltamag(wavefraction, phasefraction)
+        return flux * 10**(-0.4 * deltamag)
+
 
 
 
