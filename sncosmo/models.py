@@ -13,7 +13,7 @@ import itertools
 import numpy as np
 from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                RectBivariateSpline as Spline2d,
-                               splmake, spleval)
+                               splmake, spleval, interp1d)
 from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
 from astropy.extern import six
@@ -29,7 +29,8 @@ from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
 
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
            'SALT2Source', 'MLCS2k2Source', 'Model',
-           'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust']
+           'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust',
+           'RandomSplineMicrolensing']
 
 _SOURCES = Registry()
 
@@ -123,7 +124,6 @@ def _bandflux(model, band, time_or_phase, zp, zpsys):
     and ``time`` is used in Model, and we want the method signatures to
     have the right variable name.
     """
-
     if zp is not None and zpsys is None:
         raise ValueError('zpsys must be given if zp is not None')
 
@@ -971,7 +971,7 @@ class Model(_ModelBase):
         to label the parameters.
     effect_frames : list of str
         The frame that each effect is in (same length as `effects`).
-        Must be one of {'rest', 'obs'}.
+        Must be one of {'rest', 'obs', 'free'}.
 
     Notes
     -----
@@ -1204,6 +1204,8 @@ class Model(_ModelBase):
 
         a = 1. / (1. + self._parameters[0])
         phase = (time - self._parameters[1]) * a
+        minphase = (self.mintime() - self._parameters[1]) * a
+        maxphase = (self.maxtime() - self._parameters[1]) * a
         restwave = wave * a
 
         # Note that below we multiply by the scale factor to conserve
@@ -1221,7 +1223,10 @@ class Model(_ModelBase):
                 effect_a = 1. / (1. + self._parameters[zindex])
                 effect_wave = wave * effect_a
 
-            f = effect.propagate(effect_wave, f)
+            # For phase-dependent effects, we provide the "phase fraction,"
+            # from 0 at the model's minphase to 1 at maxphase
+            phasefraction = (phase - minphase) / (maxphase - minphase)
+            f = effect.propagate(effect_wave, f, phasefraction=phasefraction)
 
         return f
 
@@ -1608,7 +1613,7 @@ class PropagationEffect(_ModelBase):
         return self._maxwave
 
     @abc.abstractmethod
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         pass
 
     def _headsummary(self):
@@ -1617,6 +1622,55 @@ class PropagationEffect(_ModelBase):
         wavelength range: [{1:.6g}, {2:.6g}] Angstroms"""\
         .format(self.__class__.__name__, self._minwave, self._maxwave)
         return dedent(summary)
+
+
+class RandomSplineMicrolensing(PropagationEffect):
+    """Average of randomly anchored splines, to mimic microlensing.
+    We create a mock microlensing difference curve, giving the change in 
+    magnitude as a function of time (no variation with wavelength). 
+    A set of `nspl` splines are generated, each passing through `nanchor`
+    anchor points, evenly spaced in time, and with y values (representing 
+    Delta magnitude) randomly drawn from a normal distribution with varance 
+    equal to `sigmadm` squared.  The final delta magnitude curve is the mean
+    of the set of these `nspl` random spline curves.  
+    Caveat emptor: this is just a crude hack. It looks like a reasonable 
+    approximation for achromatic SN microlensing, but it is not actually 
+    derived from a real lensing simulation.
+    """
+    _param_names = [] # 'nanchor', 'sigmadm', 'nspl']
+    param_names_latex = [] # r'N$_{\rm anchor}$', r'sigma$_{\Delta \rm{M}}$',
+                         # r'N$_{\rm spl}$']
+    _minwave = 0.   # angstroms
+    _maxwave = 10.**6 # angstroms
+
+    def __init__(self, nanchor=10, sigmadm=2.0, nspl=10):
+        # self._parameters = np.array([nanchor, sigmadm, nspl])
+        self._parameters = np.array([])
+        self._nanchor = nanchor
+        self._nspl = nspl
+        self._sigmadm = sigmadm
+
+        # Define a delta mag curve as an average of random splines
+        # The time dimension spans from 0 to 1, but will be rescaled
+        # when propagated onto a model, so that it stretches from the model
+        # minphase to maxphase.
+        splineset = []
+        tarray = np.linspace(0.0, 1.0, 100)
+        for i in range(nspl):
+            time_anchors = np.linspace(0.0, 1.0, nanchor)
+            deltam_anchors = np.random.normal(0, sigmadm, len(time_anchors))
+            spl1d = Spline1d(time_anchors, deltam_anchors)
+            splineset.append(spl1d(tarray))
+        splmean = np.mean(np.array(splineset), 0)
+        self._deltamag = interp1d(tarray, splmean)
+
+
+    def propagate(self, wave, flux, phasefraction=0):
+        """Propagate the magnification onto the model's flux output."""
+        # magnify the flux
+        deltamag = np.expand_dims(self._deltamag(phasefraction), 1)
+        return flux * 10**(-0.4 * deltamag)
+
 
 
 class CCM89Dust(PropagationEffect):
@@ -1629,7 +1683,7 @@ class CCM89Dust(PropagationEffect):
     def __init__(self):
         self._parameters = np.array([0., 3.1])
 
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         """Propagate the flux."""
         ebv, r_v = self._parameters
         return extinction.apply(extinction.ccm89(wave, ebv * r_v, r_v), flux)
@@ -1645,7 +1699,7 @@ class OD94Dust(PropagationEffect):
     def __init__(self):
         self._parameters = np.array([0., 3.1])
 
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         """Propagate the flux."""
         ebv, r_v = self._parameters
         return extinction.apply(extinction.odonnell94(wave, ebv * r_v, r_v),
@@ -1664,7 +1718,7 @@ class F99Dust(PropagationEffect):
         self._r_v = r_v
         self._f = extinction.Fitzpatrick99(r_v=r_v)
 
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         """Propagate the flux."""
         ebv = self._parameters[0]
         return extinction.apply(self._f(wave, ebv * self._r_v), flux)
