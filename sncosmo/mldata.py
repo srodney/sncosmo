@@ -8,7 +8,6 @@ from scipy.interpolate import interp1d, interp2d
 
 import numpy as np
 from astropy.table import Table
-from astropy.io import ascii
 from os import path
 
 from .utils import alias_map
@@ -132,7 +131,8 @@ def microlensing_data(data):
     else:
         return MicrolensingData(data)
 
-def read_mldatafile(datafilename, magformat='multiply'):
+
+def read_mldatafile(datafilename, magformat='multiply', **kwargs):
     """Read in microlensing data from a file.
     NAN values in the magnification array are converted to 1 if
     the magnification format is multiplicative, and 0 if additive.
@@ -149,12 +149,14 @@ def read_mldatafile(datafilename, magformat='multiply'):
 
     datafilepath = path.abspath(path.expanduser(datafilename))
     ext = path.splitext(path.basename(datafilepath))[1].lower()
-    if ext in ['.txt', '.text', '.dat']:
-        datatable = Table.read(datafilename, format='ascii')
+    if 'format' in kwargs:
+        datatable = Table.read(datafilename, **kwargs)
+    elif ext in ['.txt', '.text', '.dat']:
+        datatable = Table.read(datafilename, format='ascii', **kwargs)
     elif ext in ['.fits']:
-        datatable = Table.read(datafilename, format='fits')
+        datatable = Table.read(datafilename, format='fits', **kwargs)
     else:
-        datatable = Table.read(datafilename)
+        datatable = Table.read(datafilename, **kwargs)
 
     if 'col1' in datatable.colnames:
         datatable.rename_column('col1', 'time')

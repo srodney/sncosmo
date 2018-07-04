@@ -32,6 +32,7 @@ from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
            'SALT2Source', 'MLCS2k2Source', 'Model',
            'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust',
+           'AchromaticMicrolensing',
            'AchromaticSplineMicrolensing', 'ChromaticSplineMicrolensing']
 
 _SOURCES = Registry()
@@ -1649,12 +1650,13 @@ class AchromaticMicrolensing(PropagationEffect):
         Keyword arguments are passed on to astropy.table.Table.read().
         """
         self._parameters = np.array([])
-        mldata = read_mldatafile(mlfilename, magformat=magformat)
+        mldata = read_mldatafile(mlfilename, magformat=magformat, **kwargs)
         self.mu = mldata.magnification_interpolator()
 
     def propagate(self, wave, flux, phasefraction=0):
         """Propagate the magnification onto the model's flux output."""
-        return flux * self.mu(phasefraction)
+        mu = np.expand_dims(self.mu(phasefraction), 1)
+        return flux * mu
 
 
 
