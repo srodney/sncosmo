@@ -16,15 +16,17 @@ from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                splmake, spleval, interp1d, interp2d)
 from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
+from astropy.table import Table
 from astropy.extern import six
-import extinction
 
+import extinction
 from .io import read_griddata_ascii, read_griddata_fits
 from ._registry import Registry
 from .bandpasses import get_bandpass, Bandpass
 from .magsystems import get_magsystem
 from .salt2utils import BicubicInterpolator, SALT2ColorLaw
 from .utils import integration_grid
+from .mldata import MicrolensingData, read_mldatafile
 from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
 
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
@@ -1622,6 +1624,38 @@ class PropagationEffect(_ModelBase):
         wavelength range: [{1:.6g}, {2:.6g}] Angstroms"""\
         .format(self.__class__.__name__, self._minwave, self._maxwave)
         return dedent(summary)
+
+
+class AchromaticMicrolensing(PropagationEffect):
+    """ Simulated microlensing magnification, read in from an external
+    data file.  The input data file must provide a column for SN phase
+    and magnification (no wavelength dependence).
+    """
+    _param_names = []
+    param_names_latex = []
+    _minwave = 0.
+    _maxwave = 10.**6
+
+    def __init__(self, mlfilename, magformat='multiply', **kwargs):
+        """Read in the achromatic microlensing data file.
+
+        magformat : str
+        Format of the magnification column.  May be ``multiply`` or ``add,``
+        where ``multiply`` means the magnification column provides a
+        multiplicative magnification factor, mu, so the effect is applied to
+        the source as flux * mu, and ``add`` means the magnification column
+        provides an additive magnitude, DeltaM=-2.5*log10(mu).
+
+        Keyword arguments are passed on to astropy.table.Table.read().
+        """
+        self._parameters = np.array([])
+        mldata = read_mldatafile(mlfilename, magformat=magformat)
+        self.mu = mldata.magnification_interpolator()
+
+    def propagate(self, wave, flux, phasefraction=0):
+        """Propagate the magnification onto the model's flux output."""
+        return flux * self.mu(phasefraction)
+
 
 
 class AchromaticSplineMicrolensing(PropagationEffect):

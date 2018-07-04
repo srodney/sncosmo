@@ -140,6 +140,7 @@ from .fitting import *
 from .simulation import *
 from .plotting import *
 from .photdata import *
+from .mldata import *
 from .registry import *
 
 # deprecated stuff
