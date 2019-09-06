@@ -120,9 +120,10 @@ class MicrolensingData(object):
         """
         if self.chromatic:
             return interp2d(self.time, self.wavelength, self.magnification,
-                            bounds_error=False, fill_value=1.0, kind='cubic')
+                            bounds_error=False, fill_value=None,
+                            kind='cubic')
         return interp1d(self.time, self.magnification, bounds_error=False,
-                        fill_value=1.0, kind='cubic')
+                        fill_value='extrapolate', kind='cubic')
 
 
 def microlensing_data(data):
@@ -134,8 +135,6 @@ def microlensing_data(data):
 
 def read_mldatafile(datafilename, magformat='multiply', **kwargs):
     """Read in microlensing data from a file.
-    NAN values in the magnification array are converted to 1 if
-    the magnification format is multiplicative, and 0 if additive.
 
     magformat : str
         Format of the magnification column.  May be ``multiply`` or ``add,``
@@ -166,10 +165,7 @@ def read_mldatafile(datafilename, magformat='multiply', **kwargs):
         else:
             datatable.rename_column('col2', 'magnification')
 
-    if magformat.lower().startswith('mu'):
-        inan = np.isnan(datatable['magnification'])
-        datatable['magnification'][inan] = 1.0
-    else:
-        datatable['magnification'] = np.nan_to_num(datatable['magnification'])
+    igood = np.isfinite(datatable['magnification'])
+    datatable = datatable[igood]
 
     return MicrolensingData(datatable)

@@ -41,11 +41,10 @@ docs/modules
 
 # Other generated files
 MANIFEST
-sncosmo/version.py
-sncosmo/cython_version.py
 
-# emacs files
+# editors
 *~
+.vscode
 
 # pycharm files
 .idea
@@ -64,3 +63,4 @@ misc/test-salt2model
 
 # from testing?
 .cache
+.pytest_cache
