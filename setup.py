@@ -1,36 +1,18 @@
 #!/usr/bin/env python
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
+import fnmatch
 import glob
 import os
+import re
 import sys
 
-# Ensure that astropy_helpers is available. If not installed, use
-# the included ah_bootstrap module to download from PyPI for temporary 
-# installation. This option doesn't permanently install the package.
-try:
-    import astropy_helpers
-except ImportError:
-    import ah_bootstrap
-    ah_bootstrap.use_astropy_helpers(use_git=False, auto_upgrade=False)
-
 from setuptools import setup
+from setuptools.extension import Extension
 
-#A dirty hack to get around some early import/configurations ambiguities
-if sys.version_info[0] >= 3:
-    import builtins
-else:
-    import __builtin__ as builtins
-builtins._ASTROPY_SETUP_ = True
-
-from astropy_helpers.setup_helpers import (
-    register_commands, get_debug_option, get_package_info)
-from astropy_helpers.git_helpers import get_git_devstr
-from astropy_helpers.version_helpers import generate_version_py
 
 # Need a recursive glob to find all package data files if there are
-# subdirectories
-import fnmatch
+# subdirectories. Doesn't exist on Python 3.4, so write our own:
 def recursive_glob(basedir, pattern):
     matches = []
     for root, dirnames, filenames in os.walk(basedir):
@@ -38,7 +20,26 @@ def recursive_glob(basedir, pattern):
             matches.append(os.path.join(root, filename))
     return matches
 
-# package-specific values
+
+# Synchronize version from code.
+VERSION = re.findall(r"__version__ = \"(.*?)\"",
+                     open(os.path.join("sncosmo", "__init__.py")).read())[0]
+
+
+# extension module(s): only add if setup.py argument is not egg_info, because
+# we need to import numpy, and we'd rather egg_info work when dependencies
+# are not installed.
+if sys.argv[1] != 'egg_info':
+    import numpy
+    from Cython.Build import cythonize
+    source_files = [os.path.join("sncosmo", "salt2utils.pyx")]
+    include_dirs = [numpy.get_include()]
+    extensions = [Extension("sncosmo.salt2utils", source_files,
+                            include_dirs=include_dirs)]
+    extensions = cythonize(extensions)
+else:
+    extensions = None
+
 PACKAGENAME = 'sncosmo'
 DESCRIPTION = 'Package for supernova cosmology based on astropy'
 LONG_DESCRIPTION = ''
@@ -47,52 +48,24 @@ AUTHOR_EMAIL = 'kylebarbary@gmail.com'
 LICENSE = 'BSD'
 URL = 'http://sncosmo.readthedocs.org'
 
-# Store the package name in a built-in variable so it's easy
-# to get from other parts of the setup infrastructure
-builtins._ASTROPY_PACKAGE_NAME_ = PACKAGENAME
-
-# VERSION should be PEP386 compatible (http://www.python.org/dev/peps/pep-0386)
-VERSION = '1.5.dev'
-
-# Indicates if this version is a release version
-RELEASE = 'dev' not in VERSION
-
-if not RELEASE:
-    VERSION += get_git_devstr(False)
-
-# Populate the dict of setup command overrides; this should be done before
-# invoking any other functionality from distutils since it can potentially
-# modify distutils' behavior.
-cmdclassd = register_commands(PACKAGENAME, VERSION, RELEASE)
-
-# Freeze build information in version.py
-generate_version_py(PACKAGENAME, VERSION, RELEASE,
-                    get_debug_option(PACKAGENAME))
-
-# Get configuration information from all of the various subpackages.
-# See the docstring for setup_helpers.update_package_files for more
-# details.
-package_info = get_package_info()
-
 # Add the project-global data
 pkgdatadir = os.path.join(PACKAGENAME, 'data')
 testdatadir = os.path.join(PACKAGENAME, 'tests', 'data')
-
 data_files = []
 data_files.extend(recursive_glob(pkgdatadir, '*'))
 data_files.extend(recursive_glob(testdatadir, '*'))
 data_files.append(os.path.join(PACKAGENAME, 'tests', 'coveragerc'))
 data_files.append(os.path.join(PACKAGENAME, PACKAGENAME + '.cfg'))
 data_files = [f[len(PACKAGENAME)+1:] for f in data_files]
-package_info['package_data'][PACKAGENAME] = data_files
 
 setup(name=PACKAGENAME,
       version=VERSION,
       description=DESCRIPTION,
-      install_requires=['numpy>=1.5.0',
+      python_requires='>=3.4',
+      install_requires=['numpy>=1.7.0',
                         'scipy>=0.9.0',
                         'extinction>=0.2.2',
-                        'astropy>=0.4.0'],
+                        'astropy>=1.0.0'],
       provides=[PACKAGENAME],
       author=AUTHOR,
       author_email=AUTHOR_EMAIL,
@@ -104,11 +77,12 @@ setup(name=PACKAGENAME,
           'Intended Audience :: Science/Research',
           'License :: OSI Approved :: BSD License',
           'Operating System :: OS Independent',
-          'Programming Language :: Python :: 2',
           'Programming Language :: Python :: 3',
           'Topic :: Scientific/Engineering :: Astronomy',
           'Topic :: Scientific/Engineering :: Physics'],
-      cmdclass=cmdclassd,
+
       zip_safe=False,
       use_2to3=False,
-      **package_info)
+      ext_modules=extensions,
+      packages=['sncosmo', 'sncosmo.tests'],
+      package_data={'sncosmo': data_files})

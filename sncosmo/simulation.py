@@ -157,6 +157,8 @@ def realize_lcs(observations, model, params, thresh=None,
 
     Notes
     -----
+    ``gain``
+
     ``skynoise`` is the image background contribution to the flux measurement
     error (in units corresponding to the specified zeropoint and zeropoint
     system). To get the error on a given measurement, ``skynoise`` is added
@@ -216,8 +218,9 @@ def realize_lcs(observations, model, params, thresh=None,
                               zp=snobs[colname['zp']],
                               zpsys=snobs[colname['zpsys']])
 
-        fluxerr = np.sqrt(snobs[colname['skynoise']]**2 +
-                          np.abs(flux) / snobs[colname['gain']])
+        fluxerr = snobs[colname['gain']] * (
+            np.sqrt(snobs[colname['skynoise']]**2 +
+                    np.abs(flux) / snobs[colname['gain']]))
 
         # Scatter fluxes by the fluxerr
         # np.atleast_1d is necessary here because of an apparent bug in

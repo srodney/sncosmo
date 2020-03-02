@@ -3,33 +3,16 @@
 sncosmo: A Python package for supernova cosmology
 """
 
-from __future__ import absolute_import
+import os
 
-# This indicates whether or not we are in the package's setup.py
-try:
-    _ASTROPY_SETUP_
-except NameError:
-    from sys import version_info
-    if version_info[0] >= 3:
-        import builtins
-    else:
-        import __builtin__ as builtins
-    builtins._ASTROPY_SETUP_ = False
-    del version_info
+from astropy.config import ConfigItem, ConfigNamespace
+from astropy.config.configuration import update_default_config
 
-# Populate __version__ and __githash__
-try:
-    from .version import version as __version__
-except ImportError:
-    __version__ = ''
-try:
-    from .version import githash as __githash__
-except ImportError:
-    __githash__ = ''
+__version__ = "1.5.dev737.srodneyMLhack"
 
 
 def test(package=None, test_path=None, args=None, plugins=None,
-         verbose=False, pastebin=None, remote_data=False, pep8=False,
+         verbose=False, pastebin=None, pep8=False,
          pdb=False, coverage=False, open_files=False, **kwargs):
     """
     Run the tests using py.test. A proper set of arguments is constructed and
@@ -62,11 +45,6 @@ def test(package=None, test_path=None, args=None, plugins=None,
         Convenience option for turning on py.test pastebin output. Set to
         'failed' to upload info for failed tests, or 'all' to upload info
         for all tests.
-
-    remote_data : bool, optional
-        Controls whether to run tests marked with @remote_data. These
-        tests use online data and are not run by default. Set to True to
-        run these tests.
 
     pep8 : bool, optional
         Turn on PEP8 checking via the pytest-pep8 plugin and disable normal
@@ -111,62 +89,56 @@ def test(package=None, test_path=None, args=None, plugins=None,
     return runner.run_tests(
         package=package, test_path=test_path, args=args,
         plugins=plugins, verbose=verbose, pastebin=pastebin,
-        remote_data=remote_data, pep8=pep8, pdb=pdb,
+        pep8=pep8, pdb=pdb,
         coverage=coverage, open_files=open_files, **kwargs)
 
 
-# Putting everything else in the following block makes it possible to
-# import the package with no dependencies installed. This is
-# desirable for being able to do 'setup.py egg_info'. (Though I'm not
-# sure if 'setup.py egg_info' actually imports the package...)
-if not _ASTROPY_SETUP_:
-    import os
-    from astropy.config import ConfigItem, ConfigNamespace
-    from astropy.config.configuration import update_default_config
+# Create default configurations. The file sncosmo.cfg should be
+# kept in sync with the ConfigItems here.
+class _Conf(ConfigNamespace):
+    """Configuration parameters for sncosmo."""
+    data_dir = ConfigItem(
+        None,
+        "Directory where sncosmo will store and read downloaded data "
+        "resources. If None, ASTROPY_CACHE_DIR/sncosmo is created and "
+        "used. Example: data_dir = /home/user/data/sncosmo",
+        cfgtype='string(default=None)')
+    sfd98_dir = ConfigItem(
+        None,
+        "Directory containing SFD (1998) dust maps, with names: "
+        "'SFD_dust_4096_ngp.fits' and 'SFD_dust_4096_sgp.fits'. "
+        "Example: sfd98_dir = /home/user/data/sfd98",
+        cfgtype='string(default=None)')
+    remote_timeout = ConfigItem(
+        10.0, "Remote timeout in seconds.")
 
-    # Create default configurations. The file sncosmo.cfg should be
-    # kept in sync with the ConfigItems here.
-    class Conf(ConfigNamespace):
-        """Configuration parameters for sncosmo."""
-        data_dir = ConfigItem(
-            None,
-            "Directory where sncosmo will store and read downloaded data "
-            "resources. If None, ASTROPY_CACHE_DIR/sncosmo is created and "
-            "used. Example: data_dir = /home/user/data/sncosmo",
-            cfgtype='string(default=None)')
-        sfd98_dir = ConfigItem(
-            None,
-            "Directory containing SFD (1998) dust maps, with names: "
-            "'SFD_dust_4096_ngp.fits' and 'SFD_dust_4096_sgp.fits'. "
-            "Example: sfd98_dir = /home/user/data/sfd98",
-            cfgtype='string(default=None)')
 
-    # Create an instance of the class we just defined.
-    conf = Conf()
+# Create an instance of the class we just defined.
+# This needs to be done before the imports below because `conf` is used
+# in some parts of the library.
+conf = _Conf()
 
-    # Update the user's ~/.astropy/config/sncosmo.cfg if needed.
-    update_default_config("sncosmo",  # pkg
-                          os.path.dirname(__file__),  # configdir
-                          version=__version__)
+# Update the user's ~/.astropy/config/sncosmo.cfg if needed.
+update_default_config("sncosmo",  # pkg
+                      os.path.dirname(__file__),  # configdir
+                      version=__version__)
 
-    # clean up namespace
-    del os, ConfigItem, ConfigNamespace, update_default_config
+# clean up namespace
+del os, ConfigItem, ConfigNamespace, update_default_config
 
-    # Do all the necessary imports.
-    from .bandpasses import *
-    from .magsystems import *
-    from .spectrum import *
-    from .models import *
-    from .io import *
-    from .snanaio import *
-    from .fitting import *
-    from .simulation import *
-    from .plotting import *
-    from .photdata import *
-    from .registry import *
+# import all the things into the top-level namespace
+from .bandpasses import *
+from .magsystems import *
+from .spectrum import *
+from .models import *
+from .io import *
+from .snanaio import *
+from .fitting import *
+from .simulation import *
+from .plotting import *
+from .photdata import *
+from .mldata import *
+from .registry import *
 
-    from . import registry  # deprecated in v1.2; use previous import.
-    from ._deprecated import *
-
-    # Register all the built-ins.
-    from .builtins import *
+# Register all the built-ins.
+from .builtins import *
