@@ -27,6 +27,8 @@
 
 import sys
 import os
+import datetime
+
 import sphinx_rtd_theme
 import sphinx_gallery
 import matplotlib.sphinxext.plot_directive
@@ -39,11 +41,11 @@ sys.path.insert(0, os.path.abspath("_helpers"))
 needs_sphinx = '1.3'
 
 intersphinx_mapping = {
-    'python': ('http://docs.python.org/3/', None),
-    'numpy': ('http://docs.scipy.org/doc/numpy/', None),
-    'scipy': ('http://docs.scipy.org/doc/scipy/reference/', None),
+    'python': ('https://docs.python.org/3/', None),
+    'numpy': ('https://docs.scipy.org/doc/numpy/', None),
+    'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
     'astropy': ('http://docs.astropy.org/en/stable/', None),
-    'emcee': ('http://dan.iel.fm/emcee/current/', None)
+    'emcee': ('https://emcee.readthedocs.io/en/stable/', None)
     }
 
 # Add any Sphinx extension module names here, as strings. They can be
@@ -55,6 +57,7 @@ extensions = [
     'sphinx.ext.intersphinx',
     'sphinx.ext.inheritance_diagram',
     'sphinx.ext.mathjax',
+    'sphinx.ext.linkcode',
     'sphinx_gallery.gen_gallery',
     'numpydoc',
     matplotlib.sphinxext.plot_directive.__name__
@@ -63,14 +66,18 @@ extensions = [
 numpydoc_show_class_members = False
 autosummary_generate = True
 autoclass_content = "class"
-autodoc_default_flags = ["members", "no-special-members"]
+autodoc_default_flags = ["members", "inherited-members"]
+autodoc_docstring_signature = False
 sphinx_gallery_conf = {
-    'examples_dirs' : '_examples',  # path to examples scripts
-    'gallery_dirs'  : 'examples',   # path to gallery generated examples
-    'mod_example_dir'     : 'modules/generated',  # path to store the module
-                                                  # using example template
-    'doc_module'          : ('sncosmo',),  # documented module(s)
-    #'default_thumb_file': '_logo/spectral.png',
+    'examples_dirs': '_examples',  # path to examples scripts
+    'gallery_dirs': 'examples',   # path to gallery generated examples
+    'backreferences_dir': 'modules/generated',  # path to store the module
+                                             # using example template
+    'doc_module': ('sncosmo',),  # documented module(s)
+    'download_section_examples': False,
+    'download_all_examples': False,  # don't package up examples.
+    'default_thumb_file': os.path.join(os.path.dirname(__file__), '_logo',
+                                       'spectral_white_bkg.png')
 }
 
     
@@ -87,9 +94,10 @@ master_doc = 'index'
 # -- Project information ------------------------------------------------------
 
 # This does not *have* to match the package name, but typically does
-project = u'sncosmo'
-author = u'Kyle Barbary and contributors'
-copyright = u'2013-2016, ' + author
+project = 'sncosmo'
+author = 'Kyle Barbary and contributors'
+current_year = datetime.datetime.now().year
+copyright = '2013-{:d}, {}'.format(current_year, author)
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -161,3 +169,60 @@ latex_documents = [('index', project + '.tex', project + u' Documentation',
 # (source start file, name, description, authors, manual section).
 man_pages = [('index', project.lower(), project + u' Documentation',
               [author], 1)]
+
+
+# -----------------------------------------------------------------------------
+# Source code links
+#
+# Lifted from numpy docs conf.py
+# -----------------------------------------------------------------------------
+
+import inspect
+from os.path import relpath, dirname
+
+def linkcode_resolve(domain, info):
+    """
+    Determine the URL corresponding to Python object
+    """
+    if domain != 'py':
+        return None
+
+    modname = info['module']
+    fullname = info['fullname']
+
+    submod = sys.modules.get(modname)
+    if submod is None:
+        return None
+
+    obj = submod
+    for part in fullname.split('.'):
+        try:
+            obj = getattr(obj, part)
+        except:
+            return None
+
+    try:
+        fn = inspect.getsourcefile(obj)
+    except:
+        fn = None
+    if not fn:
+        return None
+
+    try:
+        source, lineno = inspect.findsource(obj)
+    except:
+        lineno = None
+
+    if lineno:
+        linespec = "#L%d" % (lineno + 1)
+    else:
+        linespec = ""
+
+    fn = relpath(fn, start=dirname(sncosmo.__file__))
+
+    if 'dev' in sncosmo.__version__:
+        return "http://github.com/sncosmo/sncosmo/blob/master/sncosmo/%s%s" % (
+           fn, linespec)
+    else:
+        return "http://github.com/sncosmo/sncosmo/blob/v%s/sncosmo/%s%s" % (
+           sncosmo.__version__, fn, linespec)

@@ -1,6 +1,5 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """Convenience functions for photometric data."""
-from __future__ import division
 
 from collections import OrderedDict
 import copy
@@ -13,19 +12,16 @@ from .utils import alias_map
 from .bandpasses import get_bandpass
 from .magsystems import get_magsystem
 
-# deprecated (private!) functions: make them available where they used to be
-from ._deprecated import standardize_data, normalize_data
-
 __all__ = ['select_data']
 
 PHOTDATA_ALIASES = OrderedDict([
-    ('time', set(['time', 'date', 'jd', 'mjd', 'mjdobs', 'mjd_obs'])),
-    ('band', set(['band', 'bandpass', 'filter', 'flt'])),
-    ('flux', set(['flux', 'f'])),
-    ('fluxerr', set(['fluxerr', 'fe', 'fluxerror', 'flux_error', 'flux_err'])),
-    ('zp', set(['zp', 'zpt', 'zeropoint', 'zero_point'])),
-    ('zpsys', set(['zpsys', 'zpmagsys', 'magsys'])),
-    ('fluxcov', set(['cov', 'covar', 'covariance', 'covmat']))
+    ('time', {'time', 'date', 'jd', 'mjd', 'mjdobs', 'mjd_obs'}),
+    ('band', {'band', 'bandpass', 'filter', 'flt'}),
+    ('flux', {'flux', 'f'}),
+    ('fluxerr', {'fluxerr', 'fe', 'fluxerror', 'flux_error', 'flux_err'}),
+    ('zp', {'zp', 'zpt', 'zeropoint', 'zero_point'}),
+    ('zpsys', {'zpsys', 'zpmagsys', 'magsys'}),
+    ('fluxcov', {'cov', 'covar', 'covariance', 'covmat', 'fluxcov'})
     ])
 
 PHOTDATA_REQUIRED_ALIASES = ('time', 'band', 'flux', 'fluxerr', 'zp', 'zpsys')
@@ -34,10 +30,11 @@ PHOTDATA_REQUIRED_ALIASES = ('time', 'band', 'flux', 'fluxerr', 'zp', 'zpsys')
 class PhotometricData(object):
     """Internal standardized representation of photometric data table.
 
-    Has attributes ``time``, ``band``, ``flux``, ``fluxerr``, ``zp`` and
-    ``zpsys``, which are all numpy arrays of the same length sorted by
-    ``time``. This is intended for use within sncosmo; its implementation
-    may change without warning in future versions.
+    Has attributes ``time``, ``band``, ``flux``, ``fluxerr``, ``zp``
+    and ``zpsys``, which are all numpy arrays of the same length
+    sorted by ``time``. ``band`` is an array of Bandpass objects. This
+    is intended for use within sncosmo; its implementation may change
+    without warning in future versions.
 
     Has attribute ``fluxcov`` which may be ``None``.
 
@@ -46,6 +43,7 @@ class PhotometricData(object):
     data : `~astropy.table.Table`, dict, `~numpy.ndarray`
         Astropy Table, dictionary of arrays or structured numpy array
         containing the "correct" column names.
+
     """
 
     def __init__(self, data):
@@ -63,7 +61,15 @@ class PhotometricData(object):
                             required=PHOTDATA_REQUIRED_ALIASES)
 
         self.time = np.asarray(data[mapping['time']])
-        self.band = np.asarray(data[mapping['band']])
+
+        # ensure self.band contains Bandpass objects. (We could check
+        # if the original array already contains all bandpass objects,
+        # but constructing a new array is simpler.)
+        band_orig = data[mapping['band']]
+        self.band = np.empty(len(band_orig), dtype=np.object)
+        for i in range(len(band_orig)):
+            self.band[i] = get_bandpass(band_orig[i])
+
         self.flux = np.asarray(data[mapping['flux']])
         self.fluxerr = np.asarray(data[mapping['fluxerr']])
         self.zp = np.asarray(data[mapping['zp']])
@@ -144,8 +150,6 @@ class PhotometricData(object):
 
         for b in set(self.band.tolist()):
             mask = self.band == b
-            b = get_bandpass(b)
-
             bandfactor = 10.**(0.4 * (zp - self.zp[mask]))
             bandzpsys = self.zpsys[mask]
             for ms in set(bandzpsys):
@@ -231,46 +235,3 @@ def select_data(data, index):
         result.add_column(fluxcov, i)
 
     return result
-
-
-# Generate docstring: table of aliases
-
-# Descriptions for docstring only.
-_photdata_descriptions = {
-    'time': 'Time of observation in days',
-    'band': 'Bandpass of observation',
-    'flux': 'Flux of observation',
-    'fluxerr': 'Gaussian uncertainty on flux',
-    'zp': 'Zeropoint corresponding to flux',
-    'zpsys': 'Magnitude system for zeropoint',
-    'fluxcov': 'Covariance between observations (array; optional)'
-    }
-
-_photdata_types = {
-    'time': 'float',
-    'band': 'str',
-    'flux': 'float',
-    'fluxerr': 'float',
-    'zp': 'float',
-    'zpsys': 'str',
-    'fluxcov': 'ndarray'
-    }
-
-lines = [
-    '',
-    '  '.join([10 * '=', 60 * '=', 50 * '=', 50 * '=']),
-    '{0:10}  {1:60}  {2:50}  {3:50}'
-    .format('Column', 'Acceptable aliases (case-independent)',
-            'Description', 'Type')
-    ]
-lines.append(lines[1])
-for colname in PHOTDATA_ALIASES:
-    alias_list = ', '.join([repr(a) for a in PHOTDATA_ALIASES[colname]])
-    line = '{0:10}  {1:60}  {2:50}  {3:50}'.format(
-        colname,
-        alias_list,
-        _photdata_descriptions[colname],
-        _photdata_types[colname])
-    lines.append(line)
-lines.extend([lines[1], ''])
-__doc__ = '\n'.join(lines)

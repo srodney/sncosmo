@@ -13,23 +13,26 @@ import itertools
 import numpy as np
 from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                RectBivariateSpline as Spline2d,
-                               splmake, spleval)
+                               interp1d, interp2d)
 from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
-from astropy.extern import six
-import extinction
+#import extinction
 
-from .io import read_griddata_ascii, read_griddata_fits
+from .io import (read_griddata_ascii, read_griddata_fits,
+                 read_multivector_griddata_ascii)
 from ._registry import Registry
 from .bandpasses import get_bandpass, Bandpass
 from .magsystems import get_magsystem
 from .salt2utils import BicubicInterpolator, SALT2ColorLaw
 from .utils import integration_grid
+from .mldata import MicrolensingData, read_mldatafile
 from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
 
 __all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
-           'SALT2Source', 'MLCS2k2Source', 'Model',
-           'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust']
+           'SALT2Source', 'MLCS2k2Source', 'SNEMOSource', 'Model',
+           'PropagationEffect', 'CCM89Dust', 'OD94Dust', 'F99Dust',
+           'AchromaticMicrolensing',
+           'AchromaticSplineMicrolensing', 'ChromaticSplineMicrolensing']
 
 _SOURCES = Registry()
 
@@ -123,7 +126,6 @@ def _bandflux(model, band, time_or_phase, zp, zpsys):
     and ``time`` is used in Model, and we want the method signatures to
     have the right variable name.
     """
-
     if zp is not None and zpsys is None:
         raise ValueError('zpsys must be given if zp is not None')
 
@@ -195,8 +197,7 @@ class _ModelBase(object):
     """Base class for anything with parameters.
 
     Derived classes must have properties ``_param_names`` (list of str)
-    and ``_parameters`` (1-d numpy.ndarray). In the future this might
-    use model classes in astropy.modeling as a base class.
+    and ``_parameters`` (1-d numpy.ndarray).
     """
 
     @property
@@ -218,15 +219,27 @@ class _ModelBase(object):
 
     def set(self, **param_dict):
         """Set parameters of the model by name."""
-        for key, val in param_dict.items():
-            try:
-                i = self._param_names.index(key)
-            except ValueError:
-                raise KeyError("Unknown parameter: " + repr(key))
-            self._parameters[i] = val
+        self.update(param_dict)
+
+    def update(self, param_dict):
+        """Set parameters of the model from a dictionary."""
+        for key, value in param_dict.items():
+            self[key] = value
+
+    def __setitem__(self, key, value):
+        """Set a single parameter of the model by name."""
+        try:
+            i = self._param_names.index(key)
+        except ValueError:
+            raise KeyError("Unknown parameter: " + repr(key))
+        self._parameters[i] = value
 
     def get(self, name):
         """Get parameter of the model by name."""
+        return self[name]
+
+    def __getitem__(self, name):
+        """Get parameter of the model by name"""
         try:
             i = self._param_names.index(name)
         except ValueError:
@@ -408,7 +421,7 @@ class Source(_ModelBase):
         nsamples = int(ceil((self.maxphase()-self.minphase()) / sampling)) + 1
         phases = np.linspace(self.minphase(), self.maxphase(), nsamples)
 
-        if isinstance(band_or_wave, (six.string_types, Bandpass)):
+        if isinstance(band_or_wave, (str, Bandpass)):
             fluxes = self.bandflux(band_or_wave, phases)
         else:
             fluxes = self.flux(phases, band_or_wave)[:, 0]
@@ -467,7 +480,7 @@ class TimeSeriesSource(Source):
 
     .. math::
 
-       F(t, \lambda) = A \\times M(t, \lambda)
+       F(t, \\lambda) = A \\times M(t, \\lambda)
 
     where _M_ is the flux defined on a grid in phase and wavelength
     and _A_ (amplitude) is the single free parameter of the model. The
@@ -496,7 +509,6 @@ class TimeSeriesSource(Source):
         Name of the model. Default is `None`.
     version : str, optional
         Version of the model. Default is `None`.
-
     """
 
     _param_names = ['amplitude']
@@ -528,7 +540,7 @@ class StretchSource(Source):
 
     .. math::
 
-       F(t, \lambda) = A \\times M(t / s, \lambda)
+       F(t, \\lambda) = A \\times M(t / s, \\lambda)
 
     where _A_ is the amplitude and _s_ is the "stretch".
 
@@ -572,8 +584,8 @@ class SALT2Source(Source):
 
     .. math::
 
-       F(t, \lambda) = x_0 (M_0(t, \lambda) + x_1 M_1(t, \lambda))
-                       \\times 10^{-0.4 CL(\lambda) c}
+       F(t, \\lambda) = x_0 (M_0(t, \\lambda) + x_1 M_1(t, \\lambda))
+                       \\times 10^{-0.4 CL(\\lambda) c}
 
     where ``x0``, ``x1`` and ``c`` are the free parameters of the model,
     ``M_0``, ``M_1`` are the zeroth and first components of the model, and
@@ -652,7 +664,7 @@ class SALT2Source(Source):
         if modeldir is not None:
             for k in names_or_objs:
                 v = names_or_objs[k]
-                if (v is not None and isinstance(v, six.string_types)):
+                if (v is not None and isinstance(v, str)):
                     names_or_objs[k] = os.path.join(modeldir, v)
 
         # model components are interpolated to 2nd order
@@ -723,7 +735,9 @@ class SALT2Source(Source):
         # negatives to 0.0001)
         v[v < 0.0] = 0.0001
 
-        result = v * (f0 / ftot)**2 * scale**2
+        # avoid warnings due to evaluating 0. / 0. in f0 / ftot
+        with np.errstate(invalid='ignore'):
+            result = v * (f0 / ftot)**2 * scale**2
 
         # treat cases where ftot is negative the same as snfit
         result[ftot <= 0.0] = 10000.
@@ -739,14 +753,14 @@ class SALT2Source(Source):
         the model.  The covariance matrix has two components. The
         first component is diagonal (pure variance) and depends on the
         phase :math:`t` and bandpass central wavelength
-        :math:`\lambda_c` of each photometry point:
+        :math:`\\lambda_c` of each photometry point:
 
         .. math::
 
-           (F_{0, \mathrm{band}}(t) / F_{1, \mathrm{band}}(t))^2
-           S(t, \lambda_c)^2
-           (V_{00}(t, \lambda_c) + 2 x_1 V_{01}(t, \lambda_c) +
-            x_1^2 V_{11}(t, \lambda_c))
+           (F_{0, \\mathrm{band}}(t) / F_{1, \\mathrm{band}}(t))^2
+           S(t, \\lambda_c)^2
+           (V_{00}(t, \\lambda_c) + 2 x_1 V_{01}(t, \\lambda_c) +
+            x_1^2 V_{11}(t, \\lambda_c))
 
         where the 2-d functions :math:`S`, :math:`V_{00}`, :math:`V_{01}`,
         and :math:`V_{11}` are given by the files ``errscalefile``,
@@ -755,16 +769,16 @@ class SALT2Source(Source):
 
         .. math::
 
-           F_{0, \mathrm{band}}(t) = \int_\lambda M_0(t, \lambda)
-                                     T_\mathrm{band}(\lambda)
-                                     \\frac{\lambda}{hc} d\lambda
+           F_{0, \\mathrm{band}}(t) = \\int_\\lambda M_0(t, \\lambda)
+                                      T_\\mathrm{band}(\\lambda)
+                                      \\frac{\\lambda}{hc} d\\lambda
 
         .. math::
 
-           F_{1, \mathrm{band}}(t) = \int_\lambda
-                                     (M_0(t, \lambda) + x_1 M_1(t, \lambda))
-                                     T_\mathrm{band}(\lambda)
-                                     \\frac{\lambda}{hc} d\lambda
+           F_{1, \\mathrm{band}}(t) = \\int_\\lambda
+                                      (M_0(t, \\lambda) + x_1 M_1(t, \\lambda))
+                                      T_\\mathrm{band}(\\lambda)
+                                      \\frac{\\lambda}{hc} d\\lambda
 
         As this first component can sometimes be negative due to
         interpolation, there is a floor applied wherein values less than zero
@@ -778,7 +792,7 @@ class SALT2Source(Source):
 
         .. math::
 
-           CD(\lambda_c)^2
+           CD(\\lambda_c)^2
 
         where the 1-d function :math:`CD` is given by the file ``cdfile``.
         Adding these two components gives the *relative* covariance on model
@@ -818,7 +832,7 @@ class SALT2Source(Source):
         """Read color law file and set the internal colorlaw function."""
 
         # Read file
-        if isinstance(name_or_obj, six.string_types):
+        if isinstance(name_or_obj, str):
             f = open(name_or_obj, 'r')
         else:
             f = name_or_obj
@@ -885,7 +899,7 @@ class MLCS2k2Source(Source):
 
     .. math::
 
-       F(t, \lambda) = A \\times M(\Delta, t, \lambda)
+       F(t, \\lambda) = A \\times M(\\Delta, t, \\lambda)
 
     where _A_ is the amplitude and _Delta_ is the MLCS2k2 light curve shape
     parameter.
@@ -901,7 +915,7 @@ class MLCS2k2Source(Source):
     """
 
     _param_names = ['amplitude', 'delta']
-    param_names_latex = ['A', '\Delta']
+    param_names_latex = ['A', '\\Delta']
 
     def __init__(self, fluxfile, name=None, version=None):
 
@@ -944,6 +958,66 @@ class MLCS2k2Source(Source):
                 self._3d_model_flux(points).reshape(lp, lw))
 
 
+class SNEMOSource(Source):
+    """The SNEMO Type Ia supernova spectral timeseries model
+
+    The spectral flux density of this model is given by
+
+    .. math::
+       F(t, \\lambda) = c_0(e_0(t, \\lambda) +
+                           \\Sum_{i=1}^{n} c_i e_i(t, \\lambda))
+                           \\times FM07(\\lambda, A_s)
+    where ``c_0``, ``c_i``, and ``A_s`` are the free parameters of the model.
+
+    Parameters
+    ----------
+    fluxfile : str or obj, optional
+        Filename of an ascii file containing 2-d
+        array of spectral flux density values for a grid of phase
+        and wavelength values. Assuming columns ``phase``, ``wavelength``,
+        ``e_0``, ``e_1``, ``e_2``...
+    """
+    def __init__(self, fluxfile, name=None, version=None):
+        self.name = name
+        self.version = version
+
+        phase, wave, values = read_multivector_griddata_ascii(fluxfile)
+        n_vector = values.shape[0]
+
+        self._parameters = np.zeros(n_vector+1)
+        self._parameters[0] = 1
+
+        _param_names = ['c0', 'As', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7',
+                        'c8', 'c9', 'c10', 'c11', 'c12', 'c13', 'c14']
+        param_names_latex = ['c_0', 'A_s', 'c_1', 'c_2', 'c_3', 'c_4', 'c_5',
+                             'c_6', 'c_7', 'c_8', 'c_9', 'c_{10}', 'c_{11}',
+                             'c_{12}', 'c_{13}', 'c_{14}']
+        self._param_names = _param_names[:n_vector + 1]
+        self.param_names_latex = param_names_latex[:n_vector + 1]
+
+        self._phase = phase
+        self._wave = wave
+
+        self._model_fluxes = np.array([Spline2d(phase, wave,
+                                                v, kx=2, ky=2)
+                                       for v in values])
+
+    def _flux(self, phase, wave):
+        c_0 = self._parameters[0]
+        A_s = self._parameters[1]
+        color = extinction.fm07(wave * u.angstrom, A_s)
+        model_fluxes = np.array([mf(phase, wave) for mf
+                                 in self._model_fluxes])
+
+        model_ev = c_0 * (model_fluxes[0] +
+                          (self._parameters[2:, None, None] *
+                           model_fluxes[1:]).sum(axis=0))
+
+        model_c = 10**(-0.4 * color)
+
+        return model_ev * model_c
+
+
 class Model(_ModelBase):
     """An observer-frame model, composed of a Source and zero or more effects.
 
@@ -960,7 +1034,7 @@ class Model(_ModelBase):
         to label the parameters.
     effect_frames : list of str
         The frame that each effect is in (same length as `effects`).
-        Must be one of {'rest', 'obs'}.
+        Must be one of {'rest', 'obs', 'free'}.
 
     Notes
     -----
@@ -974,32 +1048,39 @@ class Model(_ModelBase):
 
     def __init__(self, source, effects=None,
                  effect_names=None, effect_frames=None):
+        # Set parameter names, initial values (inital values set to zero)
         self._param_names = ['z', 't0']
         self.param_names_latex = ['z', 't_0']
-        self._parameters = np.array([0., 0.])
+        self._parameters = np.zeros(2, dtype=np.float)
+
+        # Set source and add source parameter names
         self._source = get_source(source, copy=True)
-        self.description = None
+        self._param_names.extend(self._source.param_names)
+        self.param_names_latex.extend(self._source.param_names_latex)
+
+        # Add PropagationEffects
         self._effects = []
         self._effect_names = []
         self._effect_frames = []
-        self._synchronize_parameters()
-
-        # Add PropagationEffects
         if (effects is not None or effect_names is not None or
                 effect_frames is not None):
             try:
                 same_length = (len(effects) == len(effect_names) and
                                len(effects) == len(effect_frames))
             except TypeError:
-                raise TypeError('effects, effect_names, and effect_values '
+                raise TypeError('effects, effect_names, and effect_frames '
                                 'should all be iterables.')
             if not same_length:
-                raise ValueError('effects, effect_names and effect_values '
+                raise ValueError('effects, effect_names and effect_frames '
                                  'must have matching lengths')
 
             for effect, name, frame in zip(effects, effect_names,
                                            effect_frames):
-                self.add_effect(effect, name, frame)
+                self._add_effect_partial(effect, name, frame)
+
+        # sync
+        self._sync_parameter_arrays()
+        self._update_description()
 
     def add_effect(self, effect, name, frame):
         """
@@ -1007,20 +1088,15 @@ class Model(_ModelBase):
 
         Parameters
         ----------
-        name : str
-            Name of the effect.
         effect : `~sncosmo.PropagationEffect`
             Propagation effect.
-        frame : {'rest', 'obs'}
+        name : str
+            Name of the effect.
+        frame : {'rest', 'obs', 'free'}
         """
-        if not isinstance(effect, PropagationEffect):
-            raise TypeError('effect is not a PropagationEffect')
-        if frame not in ['rest', 'obs']:
-            raise ValueError("frame must be one of: {'rest', 'obs'}")
-        self._effects.append(cp(effect))
-        self._effect_names.append(name)
-        self._effect_frames.append(frame)
-        self._synchronize_parameters()
+        self._add_effect_partial(effect, name, frame)
+        self._sync_parameter_arrays()
+        self._update_description()
 
     @property
     def source(self):
@@ -1037,42 +1113,94 @@ class Model(_ModelBase):
         """List of constituent propagation effects."""
         return self._effects
 
-    def _synchronize_parameters(self):
+    def _add_effect_partial(self, effect, name, frame):
+        """Like 'add effect', but don't sync parameter arrays"""
+
+        if not isinstance(effect, PropagationEffect):
+            raise TypeError('effect is not a PropagationEffect')
+        if frame not in ['rest', 'obs', 'free']:
+            raise ValueError("frame must be one of: {'rest', 'obs', 'free'}")
+        self._effects.append(cp(effect))
+        self._effect_names.append(name)
+        self._effect_frames.append(frame)
+
+        # for 'free' effects, add a redshift parameter
+        if frame == 'free':
+            self._param_names.append(name + 'z')
+            self.param_names_latex.append('{\\rm ' + name + '}\\,z')
+
+        # add all of this effect's parameters
+        for param_name in effect.param_names:
+            self._param_names.append(name + param_name)
+            self.param_names_latex.append('{\\rm ' + name + '}\\,' +
+                                          param_name)
+
+    def _sync_parameter_arrays(self):
         """Synchronize parameter names and parameter arrays between
         the aggregated parameters and those of the individual source and
         effects.
+
+        This is a bit tricksy, pay attention! After this, self._parameters
+        holds all the model parameters. The source._parameters and
+        effect._parameters arrays (for each effect) are changed to reference
+        self._parameters. This works because ``B = A[start:stop]`` on
+        numpy arrays makes ``B`` a reference to a block of memory in ``A``.
+        We take advantage of this to make the model and it's components
+        reference the same block of memory, so that updates to the model's
+        parameters are automatically reflected in the components.
+
+        This assumes that we are in a state where self._effects and
+        self._effect_frames have been set, and self._parameters is an
+        iterable.
         """
 
-        # Build a new list of parameter names
-        self._param_names = self._param_names[0:2]
-        self._param_names.extend(self._source.param_names)
-        for effect, effect_name in zip(self._effects, self._effect_names):
-            self._param_names.extend([effect_name + param_name
-                                      for param_name in effect.param_names])
+        # save a reference to old parameter values, in case there are
+        # effect redshifts that have been set.
+        old_parameters = self._parameters
 
-        # Build a new list of latex parameter names
-        self.param_names_latex = self.param_names_latex[0:2]
-        self.param_names_latex.extend(self._source.param_names_latex)
-        for effect, effect_name in zip(self._effects, self._effect_names):
-            for name in effect.param_names_latex:
-                self.param_names_latex.append('{\\rm ' + effect_name + '}\,' +
-                                              name)
+        # Calculate total length of model's parameter array
+        l = 2 + len(self._source._parameters)
+        for effect, frame in zip(self._effects, self._effect_frames):
+            l += (frame == 'free') + len(effect._parameters)
 
-        # For each "model", get its parameter array.
-        param_arrays = [self._parameters[0:2]]
-        models = [self._source] + self._effects
-        param_arrays.extend([m._parameters for m in models])
+        # allocate new array (zeros so that new 'free' effects redshifts
+        # initialize to 0)
+        self._parameters = np.zeros(l, dtype=np.float)
 
-        # Create a new parameter array built from the individual arrays
-        # and reference the individual parameter arrays to the new combined
-        # array.
-        self._parameters = np.concatenate(param_arrays)
+        # copy old parameters: we do this to make sure we copy
+        # non-default values of any parameters that the model alone
+        # holds, such as z, t0 and effect redshifts.
+        self._parameters[0:len(old_parameters)] = old_parameters
+
+        # cross-reference source's parameters
         pos = 2
-        for m in models:
-            l = len(m._parameters)
-            m._parameters = self._parameters[pos:pos+l]
+        l = len(self._source._parameters)
+        self._parameters[pos:pos+l] = self._source._parameters  # copy
+        self._source._parameters = self._parameters[pos:pos+l]  # reference
+        pos += l
+
+        # initialize a list of ints that keeps track of where the redshift
+        # parameter of each effect is. Value is 0 if effect_frame is not 'free'
+        self._effect_zindicies = []
+
+        # for each effect, cross-reference the effect's parameters
+        for i in range(len(self._effects)):
+            effect = self._effects[i]
+
+            # for 'free' effects, add a redshift parameter
+            if self._effect_frames[i] == 'free':
+                self._effect_zindicies.append(pos)
+                pos += 1
+            else:
+                self._effect_zindicies.append(-1)
+
+            # add all of this effect's parameters
+            l = len(effect._parameters)
+            self._parameters[pos:pos+l] = effect._parameters  # copy
+            effect._parameters = self._parameters[pos:pos+l]  # reference
             pos += l
 
+    def _update_description(self):
         # Make a name for myself. We have to watch out for None values here.
         # If all constituents are None, name is None. Otherwise, replace
         # None's with '?'
@@ -1095,24 +1223,30 @@ class Model(_ModelBase):
 
     def minwave(self):
         """Minimum observer-frame wavelength of the model."""
-        shift = (1. + self._parameters[0])
-        max_minwave = self._source.minwave() * shift
-        for effect, frame in zip(self._effects, self._effect_frames):
+        source_shift = (1. + self._parameters[0])
+        max_minwave = self._source.minwave() * source_shift
+        for effect, frame, zindex in zip(self._effects, self._effect_frames,
+                                         self._effect_zindicies):
             effect_minwave = effect.minwave()
             if frame == 'rest':
-                effect_minwave *= shift
+                effect_minwave *= source_shift
+            elif frame == 'free':
+                effect_minwave *= (1. + self._parameters[zindex])
             if effect_minwave > max_minwave:
                 max_minwave = effect_minwave
         return max_minwave
 
     def maxwave(self):
         """Maximum observer-frame wavelength of the model."""
-        shift = (1. + self._parameters[0])
-        min_maxwave = self._source.maxwave() * shift
-        for effect, frame in zip(self._effects, self._effect_frames):
+        source_shift = (1. + self._parameters[0])
+        min_maxwave = self._source.maxwave() * source_shift
+        for effect, frame, zindex in zip(self._effects, self._effect_frames,
+                                         self._effect_zindicies):
             effect_maxwave = effect.maxwave()
             if frame == 'rest':
-                effect_maxwave *= shift
+                effect_maxwave *= source_shift
+            elif frame == 'free':
+                effect_maxwave *= (1. + self._parameters[zindex])
             if effect_maxwave < min_maxwave:
                 min_maxwave = effect_maxwave
         return min_maxwave
@@ -1134,6 +1268,8 @@ class Model(_ModelBase):
 
         a = 1. / (1. + self._parameters[0])
         phase = (time - self._parameters[1]) * a
+        minphase = (self.mintime() - self._parameters[1]) * a
+        maxphase = (self.maxtime() - self._parameters[1]) * a
         restwave = wave * a
 
         # Note that below we multiply by the scale factor to conserve
@@ -1141,11 +1277,20 @@ class Model(_ModelBase):
         f = a * self._source._flux(phase, restwave)
 
         # Pass the flux through the PropagationEffects.
-        for effect, frame in zip(self._effects, self._effect_frames):
+        for effect, frame, zindex in zip(self._effects, self._effect_frames,
+                                         self._effect_zindicies):
             if frame == 'obs':
-                f = effect.propagate(wave, f)
-            else:
-                f = effect.propagate(restwave, f)
+                effect_wave = wave
+            elif frame == 'rest':
+                effect_wave = restwave
+            else:  # frame == 'free'
+                effect_a = 1. / (1. + self._parameters[zindex])
+                effect_wave = wave * effect_a
+
+            # For phase-dependent effects, we provide the "phase fraction,"
+            # from 0 at the model's minphase to 1 at maxphase
+            phasefraction = (phase - minphase) / (maxphase - minphase)
+            f = effect.propagate(effect_wave, f, phasefraction=phasefraction)
 
         return f
 
@@ -1203,9 +1348,6 @@ class Model(_ModelBase):
         z : float or list_like, optional
             If given, evaluate the overlap when the model is at the given
             redshifts. If `None`, use the model redshift.
-        checkeffects : bool
-            If True, include wavelength limits of added effects (e.g. dust)
-            when defining the range of wavelengths accessible to the model.
 
         Returns
         -------
@@ -1223,8 +1365,8 @@ class Model(_ModelBase):
         shift = (1. + z)/(1+self._parameters[0])
         for i, b in enumerate(band):
             b = get_bandpass(b)
-            overlap[i, :] = ((b.wave[0] > self.minwave()*shift) &
-                             (b.wave[-1] < self.maxwave()*shift))
+            overlap[i, :] = ((b.minwave() > self.minwave() * shift) &
+                             (b.maxwave() < self.maxwave() * shift))
         if ndim == (0, 0):
             return overlap[0, 0]
         if ndim[1] == 0:
@@ -1289,7 +1431,7 @@ class Model(_ModelBase):
         for b in set(band):
             mask = band == b
             b = get_bandpass(b)
-            restband[mask] = Bandpass(a*b.wave, b.trans)
+            restband[mask] = b.shifted(a)
 
         phase = (time - self._parameters[1]) * a
 
@@ -1382,14 +1524,12 @@ class Model(_ModelBase):
             The return value is an `~numpy.ndarray` if phase is iterable.
         """
 
-        if (((isiterable(band1)) and
-           not (isinstance(band1, six.string_types))) or
-           ((isiterable(band2)) and
-           not (isinstance(band2, six.string_types)))):
+        band1_isiterable = isiterable(band1) and not isinstance(band1, str)
+        band2_isiterable = isiterable(band2) and not isinstance(band2, str)
+        if band1_isiterable or band2_isiterable:
             raise TypeError("Band arguments must be scalars.")
 
-        if ((isiterable(magsys)) and
-           not (isinstance(magsys, six.string_types))):
+        if (isiterable(magsys) and not isinstance(magsys, str)):
             raise TypeError("Magnitude system argument must be scalar.")
 
         return (self.bandmag(band1, magsys, time) -
@@ -1513,7 +1653,7 @@ class Model(_ModelBase):
                     effects=self._effects,
                     effect_names=self._effect_names,
                     effect_frames=self._effect_frames)
-        new._parameters[0:2] = self._parameters[0:2]
+        new._parameters[:] = self._parameters
         return new
 
     def __deepcopy__(self, memo):
@@ -1535,7 +1675,7 @@ class PropagationEffect(_ModelBase):
         return self._maxwave
 
     @abc.abstractmethod
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         pass
 
     def _headsummary(self):
@@ -1544,6 +1684,154 @@ class PropagationEffect(_ModelBase):
         wavelength range: [{1:.6g}, {2:.6g}] Angstroms"""\
         .format(self.__class__.__name__, self._minwave, self._maxwave)
         return dedent(summary)
+
+
+class AchromaticMicrolensing(PropagationEffect):
+    """ Simulated microlensing magnification, read in from an external
+    data file.  The input data file must provide a column for SN phase
+    and magnification (no wavelength dependence).
+    """
+    _param_names = []
+    param_names_latex = []
+    _minwave = 0.
+    _maxwave = 10.**6
+
+    def __init__(self, mlfilename, magformat='multiply', **kwargs):
+        """Read in the achromatic microlensing data file.
+
+        magformat : str
+        Format of the magnification column.  May be ``multiply`` or ``add,``
+        where ``multiply`` means the magnification column provides a
+        multiplicative magnification factor, mu, so the effect is applied to
+        the source as flux * mu, and ``add`` means the magnification column
+        provides an additive magnitude, DeltaM=-2.5*log10(mu).
+
+        Keyword arguments are passed on to astropy.table.Table.read().
+        """
+        self._parameters = np.array([])
+        mldata = read_mldatafile(mlfilename, magformat=magformat, **kwargs)
+        self.mu = mldata.magnification_interpolator()
+
+    def propagate(self, wave, flux, phasefraction=0):
+        """Propagate the magnification onto the model's flux output."""
+        mu = np.expand_dims(self.mu(phasefraction), 1)
+        return flux * mu
+
+
+
+class AchromaticSplineMicrolensing(PropagationEffect):
+    """Average of randomly anchored splines, to mimic microlensing.
+    We create a mock microlensing difference curve, giving the change in 
+    magnitude as a function of time (no variation with wavelength). 
+    A set of `nspl` splines are generated, each passing through `nanchor`
+    anchor points, evenly spaced in time, and with y values (representing 
+    Delta magnitude) randomly drawn from a normal distribution with varance 
+    equal to `sigmadm` squared.  The final delta magnitude curve is the mean
+    of the set of these `nspl` random spline curves.  
+    Caveat emptor: this is just a crude hack. It looks like a reasonable 
+    approximation for achromatic SN microlensing, but it is not actually 
+    derived from a real lensing simulation.
+    """
+    _param_names = []
+    param_names_latex = []
+    _minwave = 0.
+    _maxwave = 10.**6
+
+    def __init__(self, nanchor=10, sigmadm=2.0, nspl=10):
+        # self._parameters = np.array([nanchor, sigmadm, nspl])
+        self._parameters = np.array([])
+        self._nanchor = nanchor
+        self._nspl = nspl
+        self._sigmadm = sigmadm
+
+        # Define a delta mag curve as an average of random splines
+        # The time dimension spans from 0 to 1, but will be rescaled
+        # when propagated onto a model, so that it stretches from the model
+        # minphase to maxphase.
+        splineset = []
+        tarray = np.linspace(0.0, 1.0, 100)
+        for i in range(nspl):
+            time_anchors = np.linspace(0.0, 1.0, nanchor)
+            deltam_anchors = np.random.normal(0, sigmadm, len(time_anchors))
+            spl1d = Spline1d(time_anchors, deltam_anchors)
+            splineset.append(spl1d(tarray))
+        splmean = np.mean(np.array(splineset), 0)
+        self._deltamag = interp1d(tarray, splmean)
+
+
+    def propagate(self, wave, flux, phasefraction=0):
+        """Propagate the magnification onto the model's flux output."""
+        # magnify the flux
+        deltamag = np.expand_dims(self._deltamag(phasefraction), 1)
+        return flux * 10**(-0.4 * deltamag)
+
+
+class ChromaticSplineMicrolensing(PropagationEffect):
+    """Average of randomly anchored splines, to mimic microlensing.
+    We create a mock microlensing difference curve as is done for 
+    AchromaticSplineMicrolensing, giving the change in 
+    magnitude as a function of time. Then we add variation with wavelength 
+    by adding a two-dimensional polynomial to the delta mag surface. 
+
+    Caveat emptor: this is just a crude hack. It looks like a reasonable 
+    approximation for SN microlensing including wavelength variation, but it 
+    is not actually derived from a real lensing simulation.
+
+    Note that the "microlensing" this produces does not have any range of 
+    SN phase in which the microlensing is achromatic. 
+    """
+    _param_names = []
+    param_names_latex = []
+    _minwave = 200.   # Angstroms
+    _maxwave = 25000. # Angstroms
+
+    def __init__(self, nanchor=100, sigmadm=2.0, nspl=100):
+        # self._parameters = np.array([nanchor, sigmadm, nspl])
+        self._parameters = np.array([])
+        self._nanchor = nanchor
+        self._nspl = nspl
+        self._sigmadm = sigmadm
+
+        nsteps = 100
+        tarray = np.linspace(0., 1., nsteps)
+        wavearray = np.linspace(0., 1., nsteps)
+        time_anchors = np.linspace(0., 1., nanchor)
+        wave_anchors = np.linspace(0., 1., nanchor)
+
+        # First surface: make a 1d delta-mag curve that is the mean of a
+        # set of random splines in the time dimension, then extend it
+        # without variation into the wavelength dimension.
+        splfitarray = []
+        for i in range(nspl):
+            deltam_anchors = np.random.normal(
+                0, sigmadm, len(time_anchors))
+            spl1d = Spline1d(time_anchors, deltam_anchors)
+            splfitarray.append(spl1d(tarray))
+        splmean = np.mean(np.array(splfitarray), 0)
+        splmean_surface = np.tile(splmean, nsteps).reshape((nsteps, nsteps))
+
+        # Second surface: a 2-D polynomial grid across time and wavelength,
+        # defined with a random covariance matrix:
+        # each component in the cov matrix is drawn from a normal dist. with
+        # sigma = 1/4th of sigmadeltam.
+        # WARNING: right now this setup is basically totally unsupported
+        # by actual microlensing simulations.
+        cov = np.random.normal(0, sigmadm / 4., 4).reshape(2, 2)
+        polygrid_surface = np.polynomial.polynomial.polygrid2d(
+            tarray, wavearray, cov)
+
+        deltam_surface = splmean_surface + polygrid_surface
+        self._deltamag = interp2d(wavearray, tarray, deltam_surface)
+
+
+    def propagate(self, wave, flux, phasefraction=0):
+        """Propagate the magnification onto the model's flux output."""
+        # magnify the flux
+        wavefraction = (wave-self._minwave)/(self._maxwave-self._minwave)
+        deltamag = self._deltamag(wavefraction, phasefraction)
+        return flux * 10**(-0.4 * deltamag)
+
+
 
 
 class CCM89Dust(PropagationEffect):
@@ -1556,7 +1844,7 @@ class CCM89Dust(PropagationEffect):
     def __init__(self):
         self._parameters = np.array([0., 3.1])
 
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         """Propagate the flux."""
         ebv, r_v = self._parameters
         return extinction.apply(extinction.ccm89(wave, ebv * r_v, r_v), flux)
@@ -1572,7 +1860,7 @@ class OD94Dust(PropagationEffect):
     def __init__(self):
         self._parameters = np.array([0., 3.1])
 
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         """Propagate the flux."""
         ebv, r_v = self._parameters
         return extinction.apply(extinction.odonnell94(wave, ebv * r_v, r_v),
@@ -1591,7 +1879,7 @@ class F99Dust(PropagationEffect):
         self._r_v = r_v
         self._f = extinction.Fitzpatrick99(r_v=r_v)
 
-    def propagate(self, wave, flux):
+    def propagate(self, wave, flux, phasefraction=0):
         """Propagate the flux."""
         ebv = self._parameters[0]
         return extinction.apply(self._f(wave, ebv * self._r_v), flux)

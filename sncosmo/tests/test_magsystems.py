@@ -6,7 +6,6 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_almost_equal
 from astropy import units as u
 from astropy.utils.data import get_pkg_data_filename
-from astropy.tests.helper import remote_data
 import pytest
 
 import sncosmo
@@ -38,23 +37,25 @@ def test_spectralmagsystem():
                     magsys2.zpbandflux('bessellb'))
 
 
-@remote_data
+@pytest.mark.might_download
 def test_csp_magsystem():
     csp = sncosmo.get_magsystem('csp')
 
-    # filter zeropoints (copied from file)
-    zps = {"cspu": 13.044,
-           "cspg": 15.135,
-           "cspr": 14.915,
-           "cspi": 14.781,
-           "cspb": 14.344,
-           "cspv3014": 14.540,
-           "cspv3009": 14.493,
-           "cspv9844": 14.450,
+    # filter zeropoints (copied from
+    # http://csp.obs.carnegiescience.edu/data/filters
+    # on 13 April 2017)
+    zps = {"cspu": 12.986,
+           "cspg": 15.111,
+           "cspr": 14.902,
+           "cspi": 14.535,
+           "cspb": 14.328,
+           "cspv3014": 14.437,
+           "cspv3009": 14.388,
+           "cspv9844": 14.439,
            "cspys": 13.921,
            "cspjs": 13.836,
            "csphs": 13.510,
-           "cspk": 11.967,
+           "cspk": 11.968,
            "cspyd": 13.770,
            "cspjd": 13.866,
            "csphd": 13.502}
@@ -65,7 +66,7 @@ def test_csp_magsystem():
         assert abs(2.5 * math.log10(csp.zpbandflux(band)) - zp) < 0.015
 
 
-@remote_data
+@pytest.mark.might_download
 def test_compositemagsystem_band_error():
     """Test that CompositeMagSystem raises an error when band is
     not in system."""

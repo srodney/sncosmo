@@ -8,23 +8,138 @@ sncosmo v1.0 will continue to work with any v1.x version. However,
 exact results may differ between versions in the 1.x series. (For
 example, due to changes in integration method.)
 
-v1.5.0 (unreleased)
+v2.0.0 (2019-06-08)
 ===================
 
-- Added support for covariance in photometric data measurements. Covariance
-  is stored as a ``'fluxcov'`` column in the table of measurements.
+This version is the same as v1.8, with the exception that Python 2 support
+has been removed, and deprecated functions and attributes have been removed.
+These were deprecated in v1.5.0 (released April 2017) or before.
 
-- Added support for reading snfit-format "covmat" files into a table of
-  photometry::
+On Python 2, pip should automatically install sncosmo v1.8 still. If not,
+specify ``sncosmo<2.0.0``.
 
-    >>> data = read_lc('filename', format='salt2', read_covmat=True)
-    >>> data['Fluxcov'].shape == (len(data), len(data))
-    True
+Minor changes:
 
-- The environment variable ``SNCOSMO_DATA_DIR`` can be used to set the
-  path to the data directory. If set, it takes precedence over the
-  ``data_dir`` variable in the configuration file
+- The ``salt2-h17`` source model has been renamed to ``salt2-extended-h17``
+  to make clearer its relation to ``salt2-extended``. It is still available
+  under the old name for backwards compatibility.
+
+v1.8.2 (2019-06-08)
+===================
+
+- Fix bug in download location of ``snana-*`` models latest versions,
+  introduced in v1.8.0.
+
+v1.8.1 (2019-06-08)
+===================
+
+- Fix bug in download location of ``salt2-extended`` model latest version,
+  introduced in v1.8.0.
+
+v1.8.0 (2019-05-25)
+===================
+
+- Add version 2.0 of many ``snana-...`` built-in core-collapse models,
+  based on Pierel et al. 2018 (pull request 229).
+
+- Bugfixes:
+
+  - Fix compatibility with scipy 1.3+ by removing outdated import statements
+    (pull request 238).
+
+  - Fix issue affecting optimization of models with free propagation effects
+    (pull request 236).
+
+v1.7.0 (2019-02-02)
+===================
+
+- Add SNEMO2, SNEMO7, SNEMO15 source models from Saunders et al. (2018)
+  to built-ins.
+
+
+v1.6.0 (2018-04-27)
+===================
+
+- Add Hounsell et al. (2017) SALT2 model to built-ins.
+
+- Add ``remote_timeout`` configuration option.
+  
+- Build system: remove build-time dependency on astropy helpers.
+
+- Bugfixes:
+
+  - Correctly delete empty files created when a download fails.
+
+  - Use pseudo-inverse when inverting covariance matrix for increased stability.
+
+  - Fix an issue with pickling on Cython 0.26+.
+
+  - Fixed problem where ``data['fluxcov']`` was unintentionally being modified
+    in-place when passed to ``fit_lc``.
+
+  - Fixed problem where ``'fluxcov'`` not recognized as a valid name for
+    covariance column in data in ``fit_lc``.
+
+
+v1.5.0 (2017-04-20)
+===================
+
+This is a major new release. The highlight is really close compatibility of
+the SALT2 model and fitting procedure with ``snfit``, the "official" SALT2
+fitter.
+
+- ``SALT2Source``: Internal interpolation scheme of ``SALT2Source``
+  updated to match ``snfit`` implementation exactly. Test suite now tests
+  against ``snfit`` implementation.
+
+- ``fit_lc()``:
+
+  - Handling of model covariance updated to match that of ``snfit``: model
+    covariance is fixed for each fit and fit is repeated until convergence.
+    
+  - New arguments ``phase_range`` and ``wave_range``. If given,
+    data outside this range will be discarded after an initial fit and
+    additional fits will be performed until convergence.
+    With ``phase_range=(-15., 45.)`` and ``wave_range=(3000., 7000.)``,
+    behavior approximates that of snfit with default arguments.
+
+  - Added support for covariance in photometric data measurements, and
+    this covariance is used in ``fit_lc()`` if present. Covariance
+    is stored as a ``'fluxcov'`` column in the table of measurements.
+
+  - Result includes two new attributes: ``data_mask``, a boolean array
+    indicating which rows in the input data were used in the final fit
+    (since multiple fits might be performed), and ``nfit``, the number
+    of fits performed.
+
+  - New argument ``warn`` can be set to False to turn off warnings about
+    dropping bands outside model wavelength range.
+
+- ``read_lc()``:
+
+  - Added support for reading snfit-format "covmat" files into
+    a table of photometry::
+
+      >>> data = read_lc('filename', format='salt2', read_covmat=True)
+      >>> data['Fluxcov'].shape == (len(data), len(data))
+      True
+
+  - New keyword argument ``expand_bands``. When True, the returned band
+    column will contain ``Bandpass`` objects instead of strings. (Strings
+    converted to bandpass objects using ``sncosmo.get_bandpass()``.) This
+    is particularly useful for position-dependent bandpasses in the salt2
+    file format, such as ``megacampsf``: ``read_lc()`` reads the position from
+    the header and feeds the position to ``get_bandpass()`` to get a Bandpass
+    object for the correct position.
+
+- Built-in bandpasses and magnitude systems: Many new built-in bandpasses
+  and magnitude systems.
+
+- Configuration: The environment variable ``SNCOSMO_DATA_DIR`` can be
+  used to set the path to the data directory. If set, it takes
+  precedence over the ``data_dir`` variable in the configuration file
   (``$HOME/.astropy/config/sncosmo.cfg``).
+
 
 v1.4.0 (2016-11-16)
 ===================

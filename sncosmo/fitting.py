@@ -1,5 +1,4 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
-from __future__ import division, print_function
 
 import copy
 import time
@@ -9,9 +8,8 @@ import warnings
 
 import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline as Spline1d
-from astropy.extern import six
 
-from .photdata import photometric_data
+from .photdata import photometric_data, select_data
 from .utils import Result, Interp1D, ppf
 from .bandpasses import get_bandpass
 
@@ -34,8 +32,8 @@ def generate_chisq(data, model, signature='iminuit', modelcov=False):
     if modelcov:
         _, mcov = model.bandfluxcov(data.band, data.time,
                                     zp=data.zp, zpsys=data.zpsys)
-        cov += mcov
-    invcov = np.linalg.inv(cov)
+        cov = cov + mcov
+    invcov = np.linalg.pinv(cov)
 
     # iminuit expects each parameter to be a separate argument (including fixed
     # parameters)
@@ -87,11 +85,11 @@ def chisq(data, model, modelcov=False):
         if modelcov:
             mflux, mcov = model.bandfluxcov(data.band, data.time,
                                             zp=data.zp, zpsys=data.zpsys)
-            cov += mcov
+            cov = cov + mcov
         else:
             mflux = model.bandflux(data.band, data.time,
                                    zp=data.zp, zpsys=data.zpsys)
-        invcov = np.linalg.inv(cov)
+        invcov = np.linalg.pinv(cov)
         diff = data.flux - mflux
         return np.dot(np.dot(diff, invcov), diff)
 
@@ -153,7 +151,8 @@ def _mask_bands(data, model, z_bounds=None):
 
 def _warn_dropped_bands(data, mask):
     """Warn that we are dropping some bands from the data:"""
-    drop_bands = [repr(b) for b in set(data.band[np.invert(mask)])]
+    drop_bands = [(b.name if b.name is not None else repr(b))
+                  for b in set(data.band[np.invert(mask)])]
     warnings.warn("Dropping following bands from data: " +
                   ", ".join(drop_bands) +
                   "(out of model wavelength range)", RuntimeWarning)
@@ -258,7 +257,7 @@ def _phase_and_wave_mask(data, t0, z, phase_range, wave_range):
                       (data_phase < phase_range[1]))
 
     if wave_range is not None:
-        data_obswave = np.array([get_bandpass(b).wave_eff for b in data.band])
+        data_obswave = np.array([b.wave_eff for b in data.band])
         data_restwave = data_obswave / (1.0 + z)
         wave_mask = ((data_restwave > wave_range[0]) &
                      (data_restwave < wave_range[1]))
@@ -529,6 +528,7 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         # modelcov=True
         fitchisq = generate_chisq(fitdata, model, signature='iminuit',
                                   modelcov=False)
+        ndof = len(fitdata) - len(vparam_names)
 
         m = iminuit.Minuit(fitchisq, errordef=1.,
                            forced_parameters=model.param_names,
@@ -553,9 +553,8 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
         # if model covariance, we need to re-run iteratively until convergence
         # if phase range is given, we need to rerun if there are any
         # masked points.
-        refit = (d.is_valid and (modelcov or
-                                 ((phase_range or wave_range) and
-                                  np.any(data_mask != support_mask))))
+        refit = (modelcov or ((phase_range or wave_range) and
+                              np.any(data_mask != support_mask)))
         nfit = 1
         while refit:
             # set new starting point to last point
@@ -668,19 +667,9 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
                      nfit=nfit,
                      data_mask=data_mask)
 
-        depmsg = ("The `cov_names` attribute is deprecated in sncosmo v1.0 "
-                  "and will be removed in v2.0. Use `vparam_names` instead.")
-        res.__dict__['deprecated']['cov_names'] = (vparam_names, depmsg)
-
     else:
         raise ValueError("unknown method {0:r}".format(method))
 
-    if "flatten" in kwargs:
-        warnings.warn("The `flatten` keyword is deprecated in sncosmo v1.0 "
-                      "and will be removed in v2.0. Use the flatten_result() "
-                      "function instead.")
-        if kwargs["flatten"]:
-            res = flatten_result(res)
     return res, model
 
 
@@ -800,12 +789,6 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
     except ImportError:
         raise ImportError("nest_lc() requires the nestle package.")
 
-    # warnings
-    if "nobj" in kwargs:
-        warnings.warn("The nobj keyword is deprecated and will be removed in "
-                      "sncosmo v2.0. Use `npoints` instead.")
-        npoints = kwargs.pop("nobj")
-
     # experimental parameters
     tied = kwargs.get("tied", None)
 
@@ -857,7 +840,7 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
 
     # Convert bounds/priors combinations into ppfs
     if bounds is not None:
-        for key, val in six.iteritems(bounds):
+        for key, val in bounds.items():
             if key in ppfs:
                 continue  # ppfs take priority over bounds/priors
             a, b = val
@@ -950,17 +933,6 @@ def nest_lc(data, model, vparam_names, bounds, guess_amplitude_bound=False,
                  param_dict=OrderedDict(zip(model.param_names,
                                             model.parameters)),
                  data_mask=data_mask)
-
-    # Deprecated result fields.
-    depmsg = ("The `param_names` attribute is deprecated in sncosmo v1.0 "
-              "and will be removed in sncosmo v2.0."
-              "Use `vparam_names` instead.")
-    res.__dict__['deprecated']['param_names'] = (res.vparam_names, depmsg)
-
-    depmsg = ("The `logprior` attribute is deprecated in sncosmo v1.2 "
-              "and will be changed in sncosmo v2.0."
-              "Use `logvol` instead.")
-    res.__dict__['deprecated']['logprior'] = (res.logvol, depmsg)
 
     return res, model
 
