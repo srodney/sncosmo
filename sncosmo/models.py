@@ -16,7 +16,7 @@ from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
                                interp1d, interp2d)
 from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
-import extinction
+#import extinction
 
 from .io import (read_griddata_ascii, read_griddata_fits,
                  read_multivector_griddata_ascii)
