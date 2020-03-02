@@ -4,24 +4,26 @@
 
 import abc
 import os
-from collections import OrderedDict as odict
 from copy import copy as cp
-from textwrap import dedent
 from math import ceil
-import itertools
+from textwrap import dedent
 
+import extinction
 import numpy as np
-from scipy.interpolate import (InterpolatedUnivariateSpline as Spline1d,
-                               RectBivariateSpline as Spline2d,
-                               interp1d, interp2d)
-from astropy.utils.misc import isiterable
 from astropy import (cosmology, units as u, constants as const)
-#import extinction
+from astropy.utils.misc import isiterable
+from scipy.interpolate import (
+    InterpolatedUnivariateSpline as Spline1d,
+    RectBivariateSpline as Spline2d
+)
 
-from .io import (read_griddata_ascii, read_griddata_fits,
-                 read_multivector_griddata_ascii)
 from ._registry import Registry
-from .bandpasses import get_bandpass, Bandpass
+from .bandpasses import Bandpass, get_bandpass
+from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
+from .io import (
+    read_griddata_ascii, read_griddata_fits,
+    read_multivector_griddata_ascii
+)
 from .magsystems import get_magsystem
 from .salt2utils import BicubicInterpolator, SALT2ColorLaw
 from .utils import integration_grid
@@ -126,6 +128,7 @@ def _bandflux(model, band, time_or_phase, zp, zpsys):
     and ``time`` is used in Model, and we want the method signatures to
     have the right variable name.
     """
+
     if zp is not None and zpsys is None:
         raise ValueError('zpsys must be given if zp is not None')
 
@@ -1721,15 +1724,15 @@ class AchromaticMicrolensing(PropagationEffect):
 
 class AchromaticSplineMicrolensing(PropagationEffect):
     """Average of randomly anchored splines, to mimic microlensing.
-    We create a mock microlensing difference curve, giving the change in 
-    magnitude as a function of time (no variation with wavelength). 
+    We create a mock microlensing difference curve, giving the change in
+    magnitude as a function of time (no variation with wavelength).
     A set of `nspl` splines are generated, each passing through `nanchor`
-    anchor points, evenly spaced in time, and with y values (representing 
-    Delta magnitude) randomly drawn from a normal distribution with varance 
+    anchor points, evenly spaced in time, and with y values (representing
+    Delta magnitude) randomly drawn from a normal distribution with varance
     equal to `sigmadm` squared.  The final delta magnitude curve is the mean
-    of the set of these `nspl` random spline curves.  
-    Caveat emptor: this is just a crude hack. It looks like a reasonable 
-    approximation for achromatic SN microlensing, but it is not actually 
+    of the set of these `nspl` random spline curves.
+    Caveat emptor: this is just a crude hack. It looks like a reasonable
+    approximation for achromatic SN microlensing, but it is not actually
     derived from a real lensing simulation.
     """
     _param_names = []
@@ -1768,17 +1771,17 @@ class AchromaticSplineMicrolensing(PropagationEffect):
 
 class ChromaticSplineMicrolensing(PropagationEffect):
     """Average of randomly anchored splines, to mimic microlensing.
-    We create a mock microlensing difference curve as is done for 
-    AchromaticSplineMicrolensing, giving the change in 
-    magnitude as a function of time. Then we add variation with wavelength 
-    by adding a two-dimensional polynomial to the delta mag surface. 
+    We create a mock microlensing difference curve as is done for
+    AchromaticSplineMicrolensing, giving the change in
+    magnitude as a function of time. Then we add variation with wavelength
+    by adding a two-dimensional polynomial to the delta mag surface.
 
-    Caveat emptor: this is just a crude hack. It looks like a reasonable 
-    approximation for SN microlensing including wavelength variation, but it 
+    Caveat emptor: this is just a crude hack. It looks like a reasonable
+    approximation for SN microlensing including wavelength variation, but it
     is not actually derived from a real lensing simulation.
 
-    Note that the "microlensing" this produces does not have any range of 
-    SN phase in which the microlensing is achromatic. 
+    Note that the "microlensing" this produces does not have any range of
+    SN phase in which the microlensing is achromatic.
     """
     _param_names = []
     param_names_latex = []

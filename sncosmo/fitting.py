@@ -1,17 +1,15 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
 import copy
-import time
 import math
-from collections import OrderedDict
+import time
 import warnings
+from collections import OrderedDict
 
 import numpy as np
-from scipy.interpolate import InterpolatedUnivariateSpline as Spline1d
 
-from .photdata import photometric_data, select_data
-from .utils import Result, Interp1D, ppf
-from .bandpasses import get_bandpass
+from .photdata import photometric_data
+from .utils import Interp1D, Result, ppf
 
 __all__ = ['fit_lc', 'nest_lc', 'mcmc_lc', 'flatten_result', 'chisq']
 
@@ -439,8 +437,7 @@ def fit_lc(data, model, vparam_names, bounds=None, method='minuit',
     vparam_names = [s for s in model.param_names if s in vparam_names]
 
     # initialize bounds
-    if bounds is None:
-        bounds = {}
+    bounds = copy.deepcopy(bounds) if bounds else {}
 
     # Check that 'z' is bounded (if it is going to be fit).
     if 'z' in vparam_names:
@@ -1067,8 +1064,7 @@ def mcmc_lc(data, model, vparam_names, bounds=None, priors=None,
     # Make a copy of the model so we can modify it with impunity.
     model = copy.copy(model)
 
-    if bounds is None:
-        bounds = {}
+    bounds = copy.deepcopy(bounds) if bounds else {}
     if priors is None:
         priors = {}
 

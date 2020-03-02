@@ -1,13 +1,12 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-import numpy as np
 import astropy.units as u
-import astropy.constants as const
-from scipy.interpolate import splrep, splev
+import numpy as np
+from scipy.interpolate import splev, splrep
 
 from .bandpasses import get_bandpass
+from .constants import HC_ERG_AA, SPECTRUM_BANDFLUX_SPACING
 from .utils import integration_grid
-from .constants import SPECTRUM_BANDFLUX_SPACING, HC_ERG_AA
 
 __all__ = ['Spectrum']
 
@@ -63,21 +62,14 @@ class Spectrum(object):
 
         Parameters
         ----------
-        band : Bandpass object or name of registered bandpass.
+        band : Bandpass or str
+            Bandpass object or name of registered bandpass.
 
         Returns
         -------
-        bandflux : float
-            Total flux in ph/s/cm^2. If part of bandpass falls
-            outside the spectrum, `None` is returned instead.
-        bandfluxerr : float
-            Error on flux. Only returned if the `error` attribute is not
-            `None`.
+        float
+            Total flux in ph/s/cm^2.
         """
-
-        # TODO: There is some duplication between this method and
-        # models._bandflux_single.
-
         band = get_bandpass(band)
 
         # Check that bandpass wavelength range is fully contained in spectrum
